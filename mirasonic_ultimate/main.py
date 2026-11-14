@@ -1231,18 +1231,27 @@ async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = "
 
 
 
-# --- K8: SQUARE ARTWORK CROP & SIMILAR SONGS JSON FIX ---
-_ART_DIR = "/data/art_cache_fast" if _OS.path.isdir("/data") else "/tmp/art_cache_fast"
+
+# --- K8: TRUE 16:9 SQUARE CROP (NO BLACK BARS) & LIVE SIMILAR SONGS ---
+_ART_DIR = "/data/art_cache_v5" if _OS.path.isdir("/data") else "/tmp/art_cache_v5"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_RAM = {}
 _ART_MAP = {}
 
-def _to_fast_jpg(d):
+def _to_hdd_jpg(d):
     try:
-        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf","scale='max(400,iw*400/ih)':'max(400,ih*400/iw)',crop=400:400","-q:v","3","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=4)
+        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf","scale=400:400:force_original_aspect_ratio=increase:flags=lanczos,crop=400:400","-q:v","3","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=4)
         if p.returncode == 0 and len(p.stdout) > 300: return p.stdout
     except Exception: pass
     return d
+
+def _to_yt_jpg(d):
+    try:
+        # Cắt bỏ hoàn toàn 2 dải đen 4:3 trên dưới của hqdefault/sddefault bằng khung chuẩn 16:9 (iw*9/16)
+        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf","crop=iw*9/16:iw*9/16,scale=400:400:flags=lanczos","-q:v","3","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=4)
+        if p.returncode == 0 and len(p.stdout) > 300: return p.stdout
+    except Exception: pass
+    return _to_hdd_jpg(d)
 
 def _get_art_bytes(cid):
     if not cid: return None
@@ -1252,8 +1261,8 @@ def _get_art_bytes(cid):
         d = open(cf, "rb").read()
         if len(_ART_RAM) < 500: _ART_RAM[cid] = d
         return d
-    raw_id = cid[4:] if cid.startswith("hdd_") else (cid[3:] if cid.startswith(("al_","ar_")) else cid)
-    is_yt = bool(_RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) and not cid.startswith("hdd_") and (raw_id in _YL or cid.startswith(("al_","ar_")))
+    raw_id = _RE.sub(r"^(hdd_|yt5_|al_|ar_)+", "", cid)
+    is_yt = cid.startswith("yt5_") or (bool(_RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) and not cid.startswith("hdd_") and (raw_id in _YL or cid.startswith(("al_","ar_"))))
     if (cid.startswith("hdd_") or not is_yt) and _HDD:
         alid = _ART_MAP.get(raw_id, "")
         cands = []
@@ -1266,7 +1275,7 @@ def _get_art_bytes(cid):
                     with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent":"Resonus"}), timeout=6, context=_CTX) as r:
                         d = r.read()
                         if r.status == 200 and len(d) > 300 and not d.lstrip().startswith(b"<"):
-                            if not d.startswith(b"\xff\xd8") or len(d) > 90000: d = _to_fast_jpg(d)
+                            if not d.startswith(b"\xff\xd8") or len(d) > 90000: d = _to_hdd_jpg(d)
                             open(cf, "wb").write(d); _ART_RAM[cid] = d; return d
                 except Exception: pass
         qt = _HDD_META.get(raw_id)
@@ -1280,65 +1289,108 @@ def _get_art_bytes(cid):
     m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
     if m:
         vid = m.group(1)
-        for rs in ("hqdefault.jpg","mqdefault.jpg","sddefault.jpg"):
+        for rs in ("maxresdefault.jpg","hqdefault.jpg","mqdefault.jpg"):
             try:
                 with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{vid}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=4, context=_CTX) as r:
                     d = r.read()
                     if r.status == 200 and len(d) > 300:
-                        d = _to_fast_jpg(d); open(cf, "wb").write(d); _ART_RAM[cid] = d; return d
+                        d = _to_yt_jpg(d); open(cf, "wb").write(d); _ART_RAM[cid] = d; return d
             except Exception: pass
     return None
 
-def _gen_smart_radio(seed_title):
+def _clean_seed(s):
+    s = _RE.sub(r"\[HDD\]|\b(Official|MV|Video|Audio|Lyrics|HD|4K|YouTube|Channel|Music|Full|Bonus)\b", " ", str(s or ""), flags=_RE.I)
+    s = _RE.sub(r"[^\w\sÀ-ỹ]", " ", s)
+    return " ".join(s.split())
+
+def _build_similar(rid, tag):
+    raw = _RE.sub(r"^(hdd_|yt5_|al_|ar_)+", "", str(rid or ""))
+    title, artist = "", ""
+    if raw in _YL:
+        title = _YL[raw].get("title","")
+        artist = _YL[raw].get("artist","")
+    if not title:
+        for tg, at, _ in _H_IDX:
+            aid = str(at.get("id","")).replace("hdd_","")
+            if aid in (raw, "al-"+raw, "mf-"+raw, "ar-"+raw):
+                title = at.get("title") or at.get("name") or ""
+                artist = at.get("artist") or ""
+                break
+    if not title and raw in _HDD_META:
+        title = _HDD_META[raw]
+    if not title and _HDD and raw:
+        for ep in ("/rest/getSong.view", "/rest/getAlbum.view"):
+            x = _hdd_xml(ep, [("id", raw)])
+            if x is not None and len(x) > 0:
+                a = x[0].attrib
+                title = a.get("title") or a.get("name") or ""
+                artist = a.get("artist") or ""
+                if title: break
+
+    c_art = _clean_seed(artist)
+    c_tit = _clean_seed(title)
+    q_words = (c_art + " " + c_tit).split()
+    search_q = (" ".join(q_words[:6]) + " tuyển chọn") if q_words else "Bolero Nhạc Vàng Tuyển Chọn"
+
+    hdd_songs = []
+    seen = {raw, "hdd_"+raw, "al-"+raw, "mf-"+raw}
+    kw_norm = [w for w in _no_acc(c_art + " " + c_tit).split() if len(w) > 2]
+    if kw_norm and _H_IDX:
+        scored = []
+        for tg, at, txt in _H_IDX:
+            if tg in ("song", "child", "entry") and at.get("isDir") != "true":
+                sid = at.get("id","")
+                if sid in seen: continue
+                score = sum(3 if w in _no_acc(at.get("artist","")) else 1 for w in kw_norm if w in txt)
+                if score > 0: scored.append((score, at))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        for _, at in scored[:15]:
+            seen.add(at.get("id",""))
+            hdd_songs.append(dict(at))
+
+    yt_songs = []
+    try:
+        yrt = _yt_search(search_q, "searchResult3")
+        if yrt is not None and len(yrt) > 0:
+            for x in yrt[0]:
+                sid = str(x.attrib.get("id",""))
+                if x.tag == "song" and sid not in seen and not sid.startswith("loc_"):
+                    seen.add(sid)
+                    yt_songs.append(dict(x.attrib))
+    except Exception: pass
+
     rt = _E.Element("subsonic-response", status="ok")
-    mc = _E.SubElement(rt, "similarSongs2")
-    keys = [k for k in seed_title.replace("Thùy Dung","").replace("Official","").replace("[HDD]","").split() if len(k) > 1][:3]
-    matched = [s for s in _YL.values() if any(k.lower() in s.get("title","").lower() or k.lower() in s.get("artist","").lower() for k in keys)]
-    if not matched: matched = list(_YL.values())[:30]
-    for s in matched[:40]:
-        _E.SubElement(mc, "song", **s)
+    mc = _E.SubElement(rt, tag)
+    for i in range(max(len(hdd_songs), len(yt_songs))):
+        if i < len(hdd_songs): _E.SubElement(mc, "song", **hdd_songs[i])
+        if i < len(yt_songs): _E.SubElement(mc, "song", **yt_songs[i])
     return rt
 
-def _pfx(el):
-    _cln(el)
-    for x in el.iter():
-        a = x.attrib
-        for k in ("artistImageUrl","smallImageUrl","mediumImageUrl","largeImageUrl"):
-            a.pop(k, None)
-        if x.tag in ("song","child","entry","album","artist") and "id" in a:
-            rid = str(a["id"]).replace("hdd_","")
-            alid = str(a.get("albumId") or a.get("parent") or "").replace("hdd_","")
-            ca = str(a.get("coverArt") or "").replace("hdd_","")
-            if x.tag in ("song","child","entry") and alid:
-                _ART_MAP[rid] = alid; _ART_MAP["mf-"+rid] = alid
-                ca = "al-" + alid if not alid.startswith("al-") else alid
-            elif not ca:
-                ca = ("al-" + rid) if x.tag == "album" and not rid.startswith(("al-","mf-","ar-")) else rid
-            a["coverArt"] = ca
-        for k in _IDS:
-            if k in a and a[k] and not str(a[k]).startswith("hdd_"): a[k] = "hdd_" + str(a[k])
-        if x.tag in ("song","child","entry","album"):
-            for f in ("album","name","title"):
-                if f in a and a[f] and (f == "album" or x.tag == "album" or a.get("isDir") == "true") and not a[f].startswith("[HDD]"):
-                    a[f] = "[HDD] " + a[f]
-    return el
+_orig_fmt = _fmt
+def _fmt(rt, js, cb=None):
+    for x in rt.iter():
+        ca = x.attrib.get("coverArt")
+        if ca and not str(ca).startswith(("hdd_","yt5_")):
+            x.attrib["coverArt"] = "yt5_" + str(ca)
+    return _orig_fmt(rt, js, cb)
 
 @app.middleware("http")
 async def _sim_mw(req, call_next):
     p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
-    if "getsimilarsongs" in pl or "randomsongs" in pl:
+    if "getsimilarsongs" in pl:
         qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8","ignore"), keep_blank_values=True))
+        if req.method == "POST":
+            bf = await req.body()
+            if bf:
+                try: qi.extend([(str(k),str(v)) for k,v in _J.loads(bf).items()] if bf.strip().startswith(b"{") else _pq(bf.decode("utf-8","ignore"), keep_blank_values=True))
+                except Exception: pass
         qd = dict(qi); fv = qd.get("f","").lower()
         js = fv in ("json","jsonp") or "application/json" in req.headers.get("accept","").lower()
         cb = qd.get("callback") if fv == "jsonp" else None
-        
-        qt = ""
-        rid = str(qd.get("id") or "").replace("hdd_","")
-        if rid in _HDD_META: qt = _HDD_META[rid]
-        elif rid in _YL: qt = _YL[rid].get("title","")
-        
-        rt = _gen_smart_radio(qt)
-        if "randomsongs" in pl: rt[0].tag = "randomSongs"
+        rid = qd.get("id") or qd.get("songId") or qd.get("artistId") or ""
+        tg = "similarSongs2" if "2" in pl else "similarSongs"
+        lp = _A.get_running_loop()
+        rt = await lp.run_in_executor(_POOL, _build_similar, rid, tg)
         return _fmt(rt, js, cb)
     return await call_next(req)
 
