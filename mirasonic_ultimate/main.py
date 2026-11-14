@@ -1227,16 +1227,17 @@ async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = "
 
 
 
-# --- K8: GOLDEN RATIO 600x600 CAR WIDGET & PLAYER FIX ---
-_ART_SZ = 600
-_ART_DIR = f"/data/art_cache_{_ART_SZ}" if _OS.path.isdir("/data") else f"/tmp/art_cache_{_ART_SZ}"
+
+# --- K8: ULTRA-SHARP 500x500 CAR WIDGET & PLAYER FIX ---
+_ART_SZ = 500
+_ART_DIR = "/data/art_cache_500_hq" if _OS.path.isdir("/data") else "/tmp/art_cache_500_hq"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_MAP = {}
 
 def _to_jpg(d):
     try:
-        vf = f"scale={_ART_SZ}:{_ART_SZ}:force_original_aspect_ratio=increase:flags=lanczos,crop={_ART_SZ}:{_ART_SZ}"
-        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf",vf,"-q:v","2","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=6)
+        vf = f"scale={_ART_SZ}:{_ART_SZ}:force_original_aspect_ratio=increase:flags=lanczos,crop={_ART_SZ}:{_ART_SZ},unsharp=3:3:0.6:3:3:0.0"
+        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf",vf,"-q:v","1","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=6)
         if p.returncode == 0 and len(p.stdout) > 500: return p.stdout
     except Exception: pass
     return d
@@ -1283,7 +1284,7 @@ def _get_art_bytes(cid):
         with _ART_SEM:
             for cand in cands:
                 try:
-                    cq = [x for x in _hdd_q([("id", cand), ("size", str(_ART_SZ))]) if x[0] != "f"]
+                    cq = [x for x in _hdd_q([("id", cand), ("size", "800")]) if x[0] != "f"]
                     with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent":"Resonus"}), timeout=10, context=_CTX) as r:
                         d = r.read()
                         if r.status == 200 and len(d) > 500 and not d.lstrip().startswith(b"<"):
