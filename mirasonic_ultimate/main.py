@@ -1225,14 +1225,17 @@ async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = "
     rows = "".join(f"<tr><td><b>{k}</b></td><td><code>{v}</code></td><td><a href='/users?act=del&u={k}&admin_pass={admin_pass}' style='color:#ff5555'>Xóa</a></td></tr>" for k, v in _USERS.items())
     return f"<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Users</title><style>body{{background:#121212;color:#fff;font-family:sans-serif;padding:20px;max-width:480px;margin:auto}}input,button{{width:100%;padding:10px;margin:6px 0;border-radius:6px;border:1px solid #333;background:#222;color:#fff;box-sizing:border-box}}button{{background:#1db954;border:none;font-weight:bold}}table{{width:100%;margin-top:15px;border-collapse:collapse}}td,th{{padding:10px;border-bottom:1px solid #333;text-align:left}}</style></head><body><h2>👥 Quản Lý Tài Khoản</h2>{msg}<form method='get' action='/users'><input type='hidden' name='act' value='add'><input name='admin_pass' type='password' placeholder='Mật khẩu Admin' value='{admin_pass}' required><input name='u' placeholder='Tài khoản bạn bè' required><input name='p' placeholder='Mật khẩu' required><button type='submit'>➕ Lưu Tài Khoản</button></form><table><tr><th>User</th><th>Pass</th><th>Xóa</th></tr>{rows}</table></body></html>"
 
-# --- K8: BYD WIDGET THUMBNAIL FIX ---
-_ART_DIR = "/data/art_cache_v4" if _OS.path.isdir("/data") else "/tmp/art_cache_v4"
+
+# --- K8: HIGH-RES 720x720 CAR WIDGET & PLAYER FIX ---
+_ART_SZ = 720
+_ART_DIR = f"/data/art_cache_{_ART_SZ}" if _OS.path.isdir("/data") else f"/tmp/art_cache_{_ART_SZ}"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_MAP = {}
 
 def _to_jpg(d):
     try:
-        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf","scale=500:500:force_original_aspect_ratio=increase,crop=500:500","-q:v","3","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=6)
+        vf = f"scale={_ART_SZ}:{_ART_SZ}:force_original_aspect_ratio=increase:flags=lanczos,crop={_ART_SZ}:{_ART_SZ}"
+        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf",vf,"-q:v","2","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=6)
         if p.returncode == 0 and len(p.stdout) > 500: return p.stdout
     except Exception: pass
     return d
@@ -1279,7 +1282,7 @@ def _get_art_bytes(cid):
         with _ART_SEM:
             for cand in cands:
                 try:
-                    cq = [x for x in _hdd_q([("id", cand), ("size", "500")]) if x[0] != "f"]
+                    cq = [x for x in _hdd_q([("id", cand), ("size", str(_ART_SZ))]) if x[0] != "f"]
                     with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent":"Resonus"}), timeout=10, context=_CTX) as r:
                         d = r.read()
                         if r.status == 200 and len(d) > 500 and not d.lstrip().startswith(b"<"):
