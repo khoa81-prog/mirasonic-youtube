@@ -1226,8 +1226,9 @@ async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = "
     return f"<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Users</title><style>body{{background:#121212;color:#fff;font-family:sans-serif;padding:20px;max-width:480px;margin:auto}}input,button{{width:100%;padding:10px;margin:6px 0;border-radius:6px;border:1px solid #333;background:#222;color:#fff;box-sizing:border-box}}button{{background:#1db954;border:none;font-weight:bold}}table{{width:100%;margin-top:15px;border-collapse:collapse}}td,th{{padding:10px;border-bottom:1px solid #333;text-align:left}}</style></head><body><h2>👥 Quản Lý Tài Khoản</h2>{msg}<form method='get' action='/users'><input type='hidden' name='act' value='add'><input name='admin_pass' type='password' placeholder='Mật khẩu Admin' value='{admin_pass}' required><input name='u' placeholder='Tài khoản bạn bè' required><input name='p' placeholder='Mật khẩu' required><button type='submit'>➕ Lưu Tài Khoản</button></form><table><tr><th>User</th><th>Pass</th><th>Xóa</th></tr>{rows}</table></body></html>"
 
 
-# --- K8: HIGH-RES 720x720 CAR WIDGET & PLAYER FIX ---
-_ART_SZ = 720
+
+# --- K8: GOLDEN RATIO 600x600 CAR WIDGET & PLAYER FIX ---
+_ART_SZ = 600
 _ART_DIR = f"/data/art_cache_{_ART_SZ}" if _OS.path.isdir("/data") else f"/tmp/art_cache_{_ART_SZ}"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_MAP = {}
