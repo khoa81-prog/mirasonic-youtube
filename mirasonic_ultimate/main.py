@@ -1230,7 +1230,8 @@ async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = "
 
 
 
-# --- K8: SMART SIMILAR RADIO & HYBRID PLAYLISTS (AUDIO-MUSE STYLE) ---
+
+# --- K8: SQUARE ARTWORK CROP & SIMILAR SONGS JSON FIX ---
 _ART_DIR = "/data/art_cache_fast" if _OS.path.isdir("/data") else "/tmp/art_cache_fast"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_RAM = {}
@@ -1238,7 +1239,7 @@ _ART_MAP = {}
 
 def _to_fast_jpg(d):
     try:
-        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf","scale=400:400:force_original_aspect_ratio=increase,crop=400:400","-q:v","5","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=4)
+        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf","scale='max(400,iw*400/ih)':'max(400,ih*400/iw)',crop=400:400","-q:v","3","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=4)
         if p.returncode == 0 and len(p.stdout) > 300: return p.stdout
     except Exception: pass
     return d
@@ -1284,18 +1285,17 @@ def _get_art_bytes(cid):
                 with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{vid}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=4, context=_CTX) as r:
                     d = r.read()
                     if r.status == 200 and len(d) > 300:
-                        d = _to_fast_jpg(d); _ART_RAM[cid] = d; return d
+                        d = _to_fast_jpg(d); open(cf, "wb").write(d); _ART_RAM[cid] = d; return d
             except Exception: pass
     return None
 
 def _gen_smart_radio(seed_title):
     rt = _E.Element("subsonic-response", status="ok")
-    mc = _E.SubElement(rt, "randomSongs")
-    # Trộn thông minh từ YouTube + HDD dựa trên từ khóa seed
-    keys = seed_title.split()[:2]
+    mc = _E.SubElement(rt, "similarSongs2")
+    keys = [k for k in seed_title.replace("Thùy Dung","").replace("Official","").replace("[HDD]","").split() if len(k) > 1][:3]
     matched = [s for s in _YL.values() if any(k.lower() in s.get("title","").lower() or k.lower() in s.get("artist","").lower() for k in keys)]
-    if not matched: matched = list(_YL.values())[:20]
-    for s in matched[:30]:
+    if not matched: matched = list(_YL.values())[:30]
+    for s in matched[:40]:
         _E.SubElement(mc, "song", **s)
     return rt
 
@@ -1322,5 +1322,24 @@ def _pfx(el):
                 if f in a and a[f] and (f == "album" or x.tag == "album" or a.get("isDir") == "true") and not a[f].startswith("[HDD]"):
                     a[f] = "[HDD] " + a[f]
     return el
+
+@app.middleware("http")
+async def _sim_mw(req, call_next):
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if "getsimilarsongs" in pl or "randomsongs" in pl:
+        qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8","ignore"), keep_blank_values=True))
+        qd = dict(qi); fv = qd.get("f","").lower()
+        js = fv in ("json","jsonp") or "application/json" in req.headers.get("accept","").lower()
+        cb = qd.get("callback") if fv == "jsonp" else None
+        
+        qt = ""
+        rid = str(qd.get("id") or "").replace("hdd_","")
+        if rid in _HDD_META: qt = _HDD_META[rid]
+        elif rid in _YL: qt = _YL[rid].get("title","")
+        
+        rt = _gen_smart_radio(qt)
+        if "randomsongs" in pl: rt[0].tag = "randomSongs"
+        return _fmt(rt, js, cb)
+    return await call_next(req)
 
 _POOL.submit(_init_hdd)
