@@ -1229,7 +1229,8 @@ async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = "
 
 
 
-# --- K8: INSTANT RAM ARTWORK (<20ms) & SMART SONIC RADIO ---
+
+# --- K8: SMART SIMILAR RADIO & HYBRID PLAYLISTS (AUDIO-MUSE STYLE) ---
 _ART_DIR = "/data/art_cache_fast" if _OS.path.isdir("/data") else "/tmp/art_cache_fast"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_RAM = {}
@@ -1267,6 +1268,14 @@ def _get_art_bytes(cid):
                             if not d.startswith(b"\xff\xd8") or len(d) > 90000: d = _to_fast_jpg(d)
                             open(cf, "wb").write(d); _ART_RAM[cid] = d; return d
                 except Exception: pass
+        qt = _HDD_META.get(raw_id)
+        if qt:
+            try:
+                with _YTDLP.YoutubeDL({"extract_flat":"in_playlist","quiet":True,"no_warnings":True,"nocheckcertificate":True}) as y:
+                    inf = y.extract_info(f"ytsearch1:{qt}", download=False)
+                entries = inf.get("entries") or []
+                if entries and entries[0].get("id"): raw_id = str(entries[0]["id"])
+            except Exception: pass
     m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
     if m:
         vid = m.group(1)
@@ -1275,18 +1284,23 @@ def _get_art_bytes(cid):
                 with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{vid}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=4, context=_CTX) as r:
                     d = r.read()
                     if r.status == 200 and len(d) > 300:
-                        d = _to_fast_jpg(d); open(cf, "wb").write(d); _ART_RAM[cid] = d; return d
+                        d = _to_fast_jpg(d); _ART_RAM[cid] = d; return d
             except Exception: pass
     return None
 
-def _prewarm_arts(ids):
-    for cid in ids[:15]:
-        try: _get_art_bytes(cid)
-        except Exception: pass
+def _gen_smart_radio(seed_title):
+    rt = _E.Element("subsonic-response", status="ok")
+    mc = _E.SubElement(rt, "randomSongs")
+    # Trộn thông minh từ YouTube + HDD dựa trên từ khóa seed
+    keys = seed_title.split()[:2]
+    matched = [s for s in _YL.values() if any(k.lower() in s.get("title","").lower() or k.lower() in s.get("artist","").lower() for k in keys)]
+    if not matched: matched = list(_YL.values())[:20]
+    for s in matched[:30]:
+        _E.SubElement(mc, "song", **s)
+    return rt
 
 def _pfx(el):
     _cln(el)
-    warm = []
     for x in el.iter():
         a = x.attrib
         for k in ("artistImageUrl","smallImageUrl","mediumImageUrl","largeImageUrl"):
@@ -1301,14 +1315,12 @@ def _pfx(el):
             elif not ca:
                 ca = ("al-" + rid) if x.tag == "album" and not rid.startswith(("al-","mf-","ar-")) else rid
             a["coverArt"] = ca
-            warm.append("hdd_" + ca)
         for k in _IDS:
             if k in a and a[k] and not str(a[k]).startswith("hdd_"): a[k] = "hdd_" + str(a[k])
         if x.tag in ("song","child","entry","album"):
             for f in ("album","name","title"):
                 if f in a and a[f] and (f == "album" or x.tag == "album" or a.get("isDir") == "true") and not a[f].startswith("[HDD]"):
                     a[f] = "[HDD] " + a[f]
-    if warm: _POOL.submit(_prewarm_arts, list(dict.fromkeys(warm)))
     return el
 
 _POOL.submit(_init_hdd)
