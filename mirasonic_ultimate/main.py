@@ -1224,3 +1224,85 @@ async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = "
         del _USERS[u]; _save_u(); msg = f"<p style='color:#ffb86c'>🗑️ Đã xóa: <b>{u}</b></p>"
     rows = "".join(f"<tr><td><b>{k}</b></td><td><code>{v}</code></td><td><a href='/users?act=del&u={k}&admin_pass={admin_pass}' style='color:#ff5555'>Xóa</a></td></tr>" for k, v in _USERS.items())
     return f"<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Users</title><style>body{{background:#121212;color:#fff;font-family:sans-serif;padding:20px;max-width:480px;margin:auto}}input,button{{width:100%;padding:10px;margin:6px 0;border-radius:6px;border:1px solid #333;background:#222;color:#fff;box-sizing:border-box}}button{{background:#1db954;border:none;font-weight:bold}}table{{width:100%;margin-top:15px;border-collapse:collapse}}td,th{{padding:10px;border-bottom:1px solid #333;text-align:left}}</style></head><body><h2>👥 Quản Lý Tài Khoản</h2>{msg}<form method='get' action='/users'><input type='hidden' name='act' value='add'><input name='admin_pass' type='password' placeholder='Mật khẩu Admin' value='{admin_pass}' required><input name='u' placeholder='Tài khoản bạn bè' required><input name='p' placeholder='Mật khẩu' required><button type='submit'>➕ Lưu Tài Khoản</button></form><table><tr><th>User</th><th>Pass</th><th>Xóa</th></tr>{rows}</table></body></html>"
+
+# --- K8: BYD WIDGET THUMBNAIL FIX ---
+_ART_DIR = "/data/art_cache_v4" if _OS.path.isdir("/data") else "/tmp/art_cache_v4"
+_OS.makedirs(_ART_DIR, exist_ok=True)
+_ART_MAP = {}
+
+def _to_jpg(d):
+    try:
+        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf","scale=500:500:force_original_aspect_ratio=increase,crop=500:500","-q:v","3","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=6)
+        if p.returncode == 0 and len(p.stdout) > 500: return p.stdout
+    except Exception: pass
+    return d
+
+def _pfx(el):
+    _cln(el)
+    for x in el.iter():
+        a = x.attrib
+        for k in ("artistImageUrl","smallImageUrl","mediumImageUrl","largeImageUrl"):
+            a.pop(k, None)
+        if x.tag in ("song","child","entry","album","artist") and "id" in a:
+            rid = str(a["id"]).replace("hdd_","")
+            alid = str(a.get("albumId") or a.get("parent") or "").replace("hdd_","")
+            ca = str(a.get("coverArt") or "").replace("hdd_","")
+            if x.tag in ("song","child","entry") and alid:
+                _ART_MAP[rid] = alid; _ART_MAP["mf-"+rid] = alid
+                ca = "al-" + alid if not alid.startswith("al-") else alid
+            elif not ca:
+                ca = ("al-" + rid) if x.tag == "album" and not rid.startswith(("al-","mf-","ar-")) else rid
+            a["coverArt"] = ca
+            qt = f"{a.get('artist','')} {a.get('title') or a.get('name') or a.get('album') or ''}".replace("[HDD]","").strip()
+            if qt:
+                for k in (rid, ca, alid, "al-"+alid, "mf-"+rid):
+                    if k: _HDD_META[k] = qt
+        for k in _IDS:
+            if k in a and a[k] and not str(a[k]).startswith("hdd_"): a[k] = "hdd_" + str(a[k])
+        if x.tag in ("song","child","entry","album"):
+            for f in ("album","name","title"):
+                if f in a and a[f] and (f == "album" or x.tag == "album" or a.get("isDir") == "true") and not a[f].startswith("[HDD]"):
+                    a[f] = "[HDD] " + a[f]
+    return el
+
+def _get_art_bytes(cid):
+    cf = _OS.path.join(_ART_DIR, _H.md5(cid.encode()).hexdigest() + ".jpg")
+    if _OS.path.exists(cf) and _OS.path.getsize(cf) > 500:
+        return open(cf, "rb").read()
+    raw_id = cid[4:] if cid.startswith("hdd_") else (cid[3:] if cid.startswith(("al_","ar_")) else cid)
+    is_yt = bool(_RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) and not cid.startswith("hdd_") and (raw_id in _YL or cid.startswith(("al_","ar_")))
+    if (cid.startswith("hdd_") or not is_yt) and _HDD:
+        alid = _ART_MAP.get(raw_id, "")
+        cands = []
+        for x in ([raw_id, "al-"+alid, alid, "al-"+raw_id, "mf-"+raw_id] if alid else [raw_id, "al-"+raw_id, "mf-"+raw_id, raw_id[3:] if raw_id.startswith(("al-","mf-")) else ""]):
+            if x and x not in cands: cands.append(x)
+        with _ART_SEM:
+            for cand in cands:
+                try:
+                    cq = [x for x in _hdd_q([("id", cand), ("size", "500")]) if x[0] != "f"]
+                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent":"Resonus"}), timeout=10, context=_CTX) as r:
+                        d = r.read()
+                        if r.status == 200 and len(d) > 500 and not d.lstrip().startswith(b"<"):
+                            d = _to_jpg(d); open(cf, "wb").write(d); return d
+                except Exception: pass
+        qt = _HDD_META.get(raw_id)
+        if qt:
+            try:
+                with _YTDLP.YoutubeDL({"extract_flat":"in_playlist","quiet":True,"no_warnings":True,"nocheckcertificate":True}) as y:
+                    inf = y.extract_info(f"ytsearch1:{qt}", download=False)
+                entries = inf.get("entries") or []
+                if entries and entries[0].get("id"): raw_id = str(entries[0]["id"])
+            except Exception: pass
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
+    if m:
+        vid = m.group(1)
+        for rs in ("maxresdefault.jpg","sddefault.jpg","hqdefault.jpg"):
+            try:
+                with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{vid}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=5, context=_CTX) as r:
+                    d = r.read()
+                    if r.status == 200 and len(d) > 500:
+                        d = _to_jpg(d); open(cf, "wb").write(d); return d
+            except Exception: pass
+    return None
+
+_POOL.submit(_init_hdd)
