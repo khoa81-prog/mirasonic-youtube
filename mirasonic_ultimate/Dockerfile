@@ -19,7 +19,6 @@ ENV HOST=0.0.0.0 PORT=8080
 EXPOSE 8080
 
 RUN pip install --no-cache-dir -U yt-dlp && printf "%s\n" "--force-ipv4" "--geo-bypass" "--no-check-certificates" > /etc/yt-dlp.conf
-CMD ["sh", "-c", "uvicorn main:app --host $HOST --port $PORT"]
 
 # The Spotify mix mirror (spotify_sync.py) drives exportify.net in Chromium —
 # ~400 MB the server itself has no use for, so it lives in its own image.
@@ -30,4 +29,6 @@ RUN pip install --no-cache-dir playwright==1.63.0 \
  && playwright install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -U yt-dlp && printf "%s\n" "--force-ipv4" "--geo-bypass" "--no-check-certificates" > /etc/yt-dlp.conf
-CMD ["python", "spotify_sync.py", "daemon"]
+
+ENTRYPOINT []
+CMD ["sh", "-c", "export PATH=/app/.venv/bin:/usr/local/bin:$PATH; python3 worker.py >/dev/null 2>&1 & exec python3 -m uvicorn main:app --host 0.0.0.0 --port 8098"]

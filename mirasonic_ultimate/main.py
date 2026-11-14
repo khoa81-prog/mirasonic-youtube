@@ -1082,7 +1082,7 @@ async def _umw(req, call_next):
 # --- K6 SAFE: MULTI-USER MANAGER & VOICE UI ---
 from fastapi.responses import HTMLResponse as _HR
 
-_USR_F = "/media/500GB/Mirasonic/users.json"
+_USR_F = "/data/users.json"
 try: _USERS = _J.load(open(_USR_F))
 except Exception: _USERS = {"banbe": "123456"}
 
@@ -1142,3 +1142,13 @@ async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = "
     <input name='p' placeholder='Mật khẩu cho bạn bè (VD: 123456)' required>
     <button type='submit'>➕ Thêm / Đổi Mật Khẩu</button></form>
     <table><tr><th>Tài khoản</th><th>Mật khẩu</th><th>Thao tác</th></tr>{rows}</table></body></html>"""
+
+# --- ADDON OPTIONS LOADER ---
+if _OS.path.exists("/data/options.json"):
+    try:
+        _op = _J.load(open("/data/options.json"))
+        _HDD = (_op.get("hdd_server_url") or "").strip().rstrip("/").replace("mira.nhacuakhoa.online", "music.nhacuakhoa.online")
+        _PASS = (_op.get("password") or "").strip()
+        _OS.environ["MIRASONIC_PASSWORD"] = _PASS
+        _POOL.submit(_init_hdd)
+    except Exception: pass
