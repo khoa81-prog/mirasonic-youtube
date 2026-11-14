@@ -1,0 +1,96 @@
+name: mirasonic
+
+services:
+  worker:
+    build:
+      context: .
+      target: app
+    image: mirasonic:0.2.0
+    environment:
+      # Mandatory: without them the server refuses to start. Set them in a
+      # .env file next to this one — see .env.example.
+      SUBSONIC_USER: ${SUBSONIC_USER:?set SUBSONIC_USER in .env}
+      SUBSONIC_PASSWORD: ${SUBSONIC_PASSWORD:?set SUBSONIC_PASSWORD in .env}
+      # Must match the country this machine reaches YouTube from, or search
+      # will return tracks that then fail to resolve.
+      REGION: ${REGION:?set REGION in .env, e.g. US}
+      MIRASONIC_DB: /data/mirasonic.db
+      HOME: /tmp
+      # Docker captures a pipe, not a tty: without this the logs arrive in 8KB
+      # bursts, which makes them useless for watching a live session.
+      PYTHONUNBUFFERED: "1"
+      HOST: 0.0.0.0
+      PORT: 8080
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    # The only place this server writes to disk is the library database
+    # (docs/SUBSONIC.md §4). read_only stays on: only this mount is writable,
+    # not the container as a whole. Audio is never written anywhere.
+    #
+    # A plain bind mount rather than a named volume, so a backup stays one
+    # `cp`. Override LIBRARY_PATH in .env to put it somewhere else.
+    volumes:
+      - ${LIBRARY_PATH:-./data}:/data
+    # Bound to loopback by default: this server has no transport security of
+    # its own and is meant to sit behind Tailscale, a VPN or a reverse proxy.
+    # See README.md — "Exposing it".
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8094}:8080"
+
+  # The discovery agent shares the WAL database with worker, but has no HTTP
+  # surface and does not need worker to be available to rank or persist data.
+  agent:
+    image: mirasonic:0.2.0
+    profiles: [agent]
+    build:
+      context: .
+      target: app
+    command: ["python", "music_agent.py", "daemon"]
+    environment:
+      MIRASONIC_DB: /data/mirasonic.db
+      REGION: ${REGION:?set REGION in .env, e.g. US}
+      LISTENBRAINZ_USER: ${LISTENBRAINZ_USER:-}
+      LISTENBRAINZ_TOKEN: ${LISTENBRAINZ_TOKEN:-}
+      AGENT_WEEKDAY: ${AGENT_WEEKDAY:-0}
+      AGENT_HOUR_UTC: ${AGENT_HOUR_UTC:-6}
+      AGENT_PLAYLIST_SIZE: ${AGENT_PLAYLIST_SIZE:-30}
+      HOME: /tmp
+      PYTHONUNBUFFERED: "1"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ${LIBRARY_PATH:-./data}:/data
+
+  # Daily mirror of Spotify playlists through Exportify (docs/SPOTIFY-IMPORT.md).
+  # Needs data/spotify-session.json, created once with `spotify_sync.py login`.
+  spotify-sync:
+    image: mirasonic-spotify-sync:0.2.0
+    profiles: [spotify-sync]
+    build:
+      context: .
+      target: spotify-sync
+    environment:
+      MIRASONIC_DB: /data/mirasonic.db
+      REGION: ${REGION:?set REGION in .env, e.g. US}
+      SPOTIFY_SESSION: /data/spotify-session.json
+      SPOTIFY_SYNC_PLAYLISTS: ${SPOTIFY_SYNC_PLAYLISTS:-}
+      SPOTIFY_SYNC_HOUR_UTC: ${SPOTIFY_SYNC_HOUR_UTC:-7}
+      HOME: /tmp
+      PYTHONUNBUFFERED: "1"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    shm_size: 256m
+    volumes:
+      - ${LIBRARY_PATH:-./data}:/data

@@ -1,0 +1,24 @@
+name: "Mirasonic Ultimate"
+description: "Unified Subsonic Server gộp chung HDD + YouTube AAC 256kbps + Tìm kiếm giọng nói & Không dấu"
+version: "1.0.0"
+slug: "mirasonic_ultimate"
+init: false
+arch:
+  - aarch64
+  - amd64
+ports:
+  8098/tcp: 8098
+map:
+  - media:rw
+  - share:rw
+  - data:rw
+options:
+  music_dir: "/media/500GB/Music"
+  hdd_server_url: "https://music.nhacuakhoa.online"
+  username: "admin"
+  password: "Haidang06"
+schema:
+  music_dir: str
+  hdd_server_url: str
+  username: str
+  password: password
