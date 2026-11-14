@@ -757,7 +757,7 @@ _CTX, _POOL, _TLS = _S._create_unverified_context(), _TP(max_workers=12), _TH.lo
 _UC, _JOBS, _JL, _YL, _SCACHE, _H_IDX = {}, {}, _TH.Lock(), {}, {}, []
 _S_SEQ, _LAST_Q = 0, ""
 _IDS = ("id","parent","albumId","artistId","coverArt","playlistId")
-_INTS = {"duration","size","bitRate","track","discNumber","year","songCount","albumCount","playCount","code","offset","totalHits"}
+_INTS = {"samplingRate","bitDepth","channelCount","duration","size","bitRate","track","discNumber","year","songCount","albumCount","playCount","code","offset","totalHits"}
 _LSTS = {"musicFolder","index","artist","album","song","entry","child","playlist","genre"}
 _CORS = {"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"*","Access-Control-Allow-Headers":"*"}
 
@@ -1295,7 +1295,7 @@ def _make_song(vid, tit, art, alb="", dur="240", is_vid=False, thumb_url=""):
         "title": tit, "album": alb, "artist": art, "track": "1",
         "year": "2026", "genre": "YouTube" if is_vid else "YouTube Music",
         "coverArt": vid, "size": "8000000", "contentType": "audio/aac",
-        "suffix": "aac", "duration": str(dur or "240"), "bitRate": "256",
+        "suffix": "aac", "duration": str(dur or "240"), "bitRate": "256", "samplingRate": "48000", "bitDepth": "16", "channelCount": "2", "mediaType": "song",
         "path": f"{art}/{alb}/{tit}.aac", "isVideo": "false",
         "created": "2026-01-01T00:00:00.000Z",
         "albumId": "al_" + vid, "artistId": arid, "type": "music"
