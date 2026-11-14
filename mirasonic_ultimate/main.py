@@ -860,10 +860,45 @@ def _yt_search(q, tag="searchResult3"):
     except Exception: pass
     return rt
 
+
 # --- K3 ---
+from fastapi.responses import HTMLResponse as _HR
+
+_ART_DIR = "/data/art_cache_v3" if _OS.path.isdir("/data") else "/tmp/art_cache_v3"
+_OS.makedirs(_ART_DIR, exist_ok=True)
+_ART_SEM = _TH.Semaphore(6)
+_HDD_META = {}
+_PNG_1X1 = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82"
+_USR_F = "/data/users.json" if _OS.path.isdir("/data") else "/media/500GB/Mirasonic/users.json"
+try: _USERS = _J.load(open(_USR_F))
+except Exception: _USERS = {"banbe": "123456"}
+
+def _save_u():
+    try: _J.dump(_USERS, open(_USR_F, "w"))
+    except Exception: pass
+_save_u()
+
+def _load_addon_opts():
+    global _HDD, _PASS
+    if _OS.path.exists("/data/options.json"):
+        try:
+            op = _J.load(open("/data/options.json"))
+            h = (op.get("hdd_server_url") or "").strip().rstrip("/").replace("mira.nhacuakhoa.online", "music.nhacuakhoa.online")
+            if h: _HDD = h
+            p = (op.get("password") or "").strip()
+            if p: _PASS = p; _OS.environ["MIRASONIC_PASSWORD"] = p
+        except Exception: pass
+
+_load_addon_opts()
+
 def _cln(el):
     for x in el.iter():
         if "}" in x.tag: x.tag = x.tag.split("}", 1)[1]
+    el.attrib.pop("openSubsonic", None)
+    for p in el.iter():
+        if p.tag in ("song","child","entry"): p[:] = []
+        elif p.tag == "album": p[:] = [c for c in p if c.tag in ("song","child","entry")]
+        elif p.tag == "artist": p[:] = [c for c in p if c.tag in ("album","child","entry")]
     return el
 
 def _ilv(mc, hc):
@@ -878,9 +913,11 @@ def _ilv(mc, hc):
     mc[:] = out
 
 def _x2d(el, d=0):
+    if not el.attrib and len(el) == 0:
+        return (el.text or "").strip()
     r = {}
     for k, v in el.attrib.items():
-        if k not in {"title","name","album","artist","id","parent","comment","path"} and v in ("true","false"): r[k] = (v == "true")
+        if k not in {"title","name","album","artist","id","parent","comment","path","coverArt","albumId","artistId"} and v in ("true","false"): r[k] = (v == "true")
         elif k in _INTS:
             try: r[k] = int(float(v))
             except Exception: r[k] = v
@@ -893,20 +930,40 @@ def _x2d(el, d=0):
             if not isinstance(r[t], list): r[t] = [r[t]]
             r[t].append(v)
         else: r[t] = v
-    if el.tag.endswith(("searchResult3","searchResult2")):
+    tg = el.tag
+    if tg.endswith(("searchResult3","searchResult2","starred2","starred")):
         r.setdefault("artist", []); r.setdefault("album", []); r.setdefault("song", [])
-    elif el.tag.endswith(("albumList2","albumList")): r.setdefault("album", [])
+    elif tg.endswith(("albumList2","albumList")): r.setdefault("album", [])
+    elif tg.endswith(("randomSongs","topSongs","similarSongs2","similarSongs","songsByGenre")): r.setdefault("song", [])
+    elif tg == "album" and d == 1: r.setdefault("song", [])
+    elif tg == "artist" and d == 1: r.setdefault("album", [])
+    elif tg == "artists": r.setdefault("index", [])
+    elif tg == "playlists": r.setdefault("playlist", [])
+    elif tg == "playlist": r.setdefault("entry", [])
+    elif tg == "directory": r.setdefault("child", [])
+    elif tg == "genres": r.setdefault("genre", [])
+    elif tg == "musicFolders": r.setdefault("musicFolder", [])
     return r
 
 def _pfx(el):
     _cln(el)
     for x in el.iter():
         a = x.attrib
+        for k in ("artistImageUrl","smallImageUrl","mediumImageUrl","largeImageUrl"):
+            a.pop(k, None)
+        if x.tag in ("song","child","entry","album","artist") and "id" in a:
+            rid = str(a["id"]).replace("hdd_","")
+            ca = str(a.get("coverArt") or "").replace("hdd_","")
+            if not ca:
+                ca = ("al-" + rid) if x.tag == "album" and not rid.startswith(("al-","mf-","ar-")) else rid
+                a["coverArt"] = ca
+            qt = f"{a.get('artist','')} {a.get('title') or a.get('name') or a.get('album') or ''}".replace("[HDD]","").strip()
+            if qt: _HDD_META[rid] = qt; _HDD_META[ca] = qt
         for k in _IDS:
             if k in a and a[k] and not str(a[k]).startswith("hdd_"): a[k] = "hdd_" + str(a[k])
-        if x.tag.endswith(("song","child","entry","album")):
+        if x.tag in ("song","child","entry","album"):
             for f in ("album","name","title"):
-                if f in a and a[f] and (f == "album" or x.tag.endswith("album") or a.get("isDir") == "true") and not a[f].startswith("[HDD]"):
+                if f in a and a[f] and (f == "album" or x.tag == "album" or a.get("isDir") == "true") and not a[f].startswith("[HDD]"):
                     a[f] = "[HDD] " + a[f]
     return el
 
@@ -916,6 +973,7 @@ def _hdd_q(qi):
     return q
 
 def _hdd_xml(path, qi):
+    if not _HDD: return None
     try:
         with _U.urlopen(_U.Request(f"{_HDD}{path}?{_ue(_hdd_q(qi))}", headers={"User-Agent":"Resonus"}), timeout=8, context=_CTX) as r:
             rt = _cln(_E.fromstring(r.read()))
@@ -924,8 +982,10 @@ def _hdd_xml(path, qi):
     return None
 
 def _init_hdd():
+    _load_addon_opts()
     rt = _hdd_xml("/rest/search3.view", [("query",""),("artistCount","500"),("albumCount","1000"),("songCount","3000")])
     if rt is not None and len(rt) > 0:
+        _H_IDX.clear()
         for x in rt[0]:
             a = x.attrib
             txt = _no_acc(f"{a.get('title','')} {a.get('name','')} {a.get('artist','')} {a.get('album','')}")
@@ -948,7 +1008,7 @@ def _hdd_search(q, qi):
 
 def _fmt(rt, js, cb=None):
     _cln(rt)
-    rt.attrib.update({"status":rt.attrib.get("status","ok"),"version":"1.16.1","type":"navidrome","serverVersion":"0.52.5","openSubsonic":"true"})
+    rt.attrib.update({"status":rt.attrib.get("status","ok"),"version":"1.16.1","type":"subsonic","serverVersion":"1.16.1"})
     if js:
         b = _J.dumps({"subsonic-response": _x2d(rt, 0)})
         return _R(content=f"{cb}({b});" if cb else b, media_type="application/json; charset=utf-8", headers=_CORS)
@@ -959,9 +1019,62 @@ _POOL.submit(_init_hdd)
 _POOL.submit(_yt_search, "Thùy Dung Lệ Quyên Bolero")
 
 # --- K4 ---
+def _check_auth(qd):
+    u = str(qd.get("u") or "").strip()
+    if not u: return True
+    all_u = {**_USERS, "admin": _OS.environ.get("MIRASONIC_PASSWORD", _PASS)}
+    if u not in all_u: return False
+    exp = str(all_u[u])
+    t, s = str(qd.get("t") or ""), str(qd.get("s") or "")
+    if t and s: return _H.md5((exp + s).encode()).hexdigest().lower() == t.lower()
+    rp = str(qd.get("p") or "")
+    if rp.startswith("enc:"):
+        try: rp = bytes.fromhex(rp[4:]).decode("utf-8", "ignore")
+        except Exception: pass
+    return (not rp) or (rp == exp)
+
+def _get_art_bytes(cid):
+    cf = _OS.path.join(_ART_DIR, _H.md5(cid.encode()).hexdigest() + ".jpg")
+    if _OS.path.exists(cf) and _OS.path.getsize(cf) > 200:
+        return open(cf, "rb").read()
+    raw_id = cid[4:] if cid.startswith("hdd_") else (cid[3:] if cid.startswith(("al_","ar_")) else cid)
+    is_yt = bool(_RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) and not cid.startswith("hdd_") and (raw_id in _YL or cid.startswith(("al_","ar_")))
+    if (cid.startswith("hdd_") or not is_yt) and _HDD:
+        with _ART_SEM:
+            cands = [raw_id] if raw_id.startswith(("al-","mf-","ar-")) else [raw_id, "al-"+raw_id, "mf-"+raw_id, "ar-"+raw_id]
+            for cand in cands:
+                try:
+                    cq = [x for x in _hdd_q([("id", cand)]) if x[0] != "f"]
+                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent":"Resonus"}), timeout=10, context=_CTX) as r:
+                        d = r.read()
+                        if r.status == 200 and len(d) > 200 and not d.lstrip().startswith(b"<"):
+                            open(cf, "wb").write(d); return d
+                except Exception: pass
+        qt = _HDD_META.get(raw_id)
+        if qt:
+            try:
+                with _YTDLP.YoutubeDL({"extract_flat":"in_playlist","quiet":True,"no_warnings":True,"nocheckcertificate":True}) as y:
+                    inf = y.extract_info(f"ytsearch1:{qt}", download=False)
+                entries = inf.get("entries") or []
+                if entries and entries[0].get("id"):
+                    raw_id = str(entries[0]["id"])
+            except Exception: pass
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
+    if m:
+        vid = m.group(1)
+        for rs in ("maxresdefault.jpg","sddefault.jpg","hqdefault.jpg"):
+            try:
+                with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{vid}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=5, context=_CTX) as r:
+                    d = r.read()
+                    if r.status == 200 and len(d) > 200:
+                        open(cf, "wb").write(d); return d
+            except Exception: pass
+    return None
+
 @app.middleware("http")
 async def _umw(req, call_next):
     if req.method == "OPTIONS": return _R(status_code=200, headers=_CORS)
+    _load_addon_opts()
     p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
     if not pl.startswith("/rest/"): return await call_next(req)
     qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8","ignore"), keep_blank_values=True))
@@ -970,17 +1083,38 @@ async def _umw(req, call_next):
         if bf:
             try: qi.extend([(str(k),str(v)) for k,v in _J.loads(bf).items()] if bf.strip().startswith(b"{") else _pq(bf.decode("utf-8","ignore"), keep_blank_values=True))
             except Exception: pass
+        async def _rc(): return {"type": "http.request", "body": bf, "more_body": False}
+        req._receive = _rc
     qd = dict(qi); fv = qd.get("f","").lower()
     js = fv in ("json","jsonp") or "application/json" in req.headers.get("accept","").lower()
     cb = qd.get("callback") if fv == "jsonp" else None
-    ish = any(isinstance(v, str) and v.startswith("hdd_") for k, v in qi if k in ("id","albumId","artistId","playlistId","songId"))
     lp = _A.get_running_loop()
 
     if "ping" in pl: return _fmt(_E.Element("subsonic-response", status="ok"), js, cb)
+    if "/getcoverart" in pl:
+        cid = str(qd.get("id") or "").strip()
+        d = await lp.run_in_executor(_POOL, _get_art_bytes, cid) if cid else None
+        if d:
+            ct = "image/png" if d.startswith(b"\x89PNG") else "image/jpeg"
+            return _R(content=d, media_type=ct, headers={**_CORS, "Content-Length": str(len(d)), "Cache-Control": "public, max-age=604800"})
+        return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1))})
+
+    if not _check_auth(qd):
+        rt = _E.Element("subsonic-response", status="failed")
+        _E.SubElement(rt, "error", code="40", message="Sai tai khoan hoac mat khau!")
+        return _fmt(rt, js, cb)
+    mp = _OS.environ.get("MIRASONIC_PASSWORD", _PASS)
+    req.scope["query_string"] = _ue([(k, v) for k, v in qi if k not in ("u","p","t","s")] + [("u","admin"),("p",mp)]).encode()
+
     if "getlicense" in pl:
         rt = _E.Element("subsonic-response", status="ok"); _E.SubElement(rt, "license", valid="true", email="a@b.c"); return _fmt(rt, js, cb)
+    if any(x in pl for x in ("getartistinfo","getalbuminfo","getlyrics","getopensubsonicextensions")):
+        rt = _E.Element("subsonic-response", status="ok")
+        tg = "artistInfo2" if "artistinfo2" in pl else ("artistInfo" if "artistinfo" in pl else ("albumInfo" if "albuminfo" in pl else ("lyrics" if "lyrics" in pl else "openSubsonicExtensions")))
+        _E.SubElement(rt, tg); return _fmt(rt, js, cb)
 
-    if any(x in pl for x in ("/stream","/download","/getcoverart","/avatar","/hls")):
+    ish = any(isinstance(v, str) and v.startswith("hdd_") for k, v in qi if k in ("id","albumId","artistId","playlistId","songId"))
+    if any(x in pl for x in ("/stream","/download","/avatar","/hls")):
         if ish:
             cq = [x for x in _hdd_q(qi) if x[0] != "f"]
             rh = {"User-Agent":"Resonus", **({"Range":req.headers["range"]} if "range" in req.headers else {})}
@@ -992,12 +1126,6 @@ async def _umw(req, call_next):
                 finally: up.close()
             return _SR(_g(), status_code=up.status, headers=sh)
         m = _RE.search(r"([A-Za-z0-9_-]{11})$", str(qd.get("id","")))
-        if "/getcoverart" in pl and m:
-            for rs in ("maxresdefault.jpg","sddefault.jpg","hqdefault.jpg"):
-                try:
-                    with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{m.group(1)}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=5, context=_CTX) as r:
-                        if r.status == 200: return _R(content=r.read(), media_type="image/jpeg", headers=_CORS)
-                except Exception: pass
         if ("/stream" in pl or "/download" in pl) and m:
             j = _ens(m.group(1))
             for _ in range(80):
@@ -1018,15 +1146,18 @@ async def _umw(req, call_next):
         hrt = await lp.run_in_executor(_POOL, _hdd_xml, p, qi)
         if hrt is not None: return _fmt(hrt, js, cb)
 
-    rid = qd.get("id", ""); vid = rid[3:] if rid.startswith("al_") else rid
-    if vid in _YL and any(x in pl for x in ("/getalbum","/getsong","/getmusicdirectory")):
-        s = _YL[vid]; rt = _E.Element("subsonic-response", status="ok")
-        if "song" in pl: _E.SubElement(rt, "song", **s)
-        else:
-            tg = "directory" if "directory" in pl else "album"
-            al = _E.SubElement(rt, tg, id="al_"+vid, parent=s["artistId"], isDir="true", name=s["album"], title=s["album"], album=s["album"], artist=s["artist"], artistId=s["artistId"], coverArt=vid, songCount="1", duration=s["duration"], playCount="1", created=s["created"], year="2026", genre="YouTube")
-            _E.SubElement(al, "child" if tg=="directory" else "song", **s)
-        return _fmt(rt, js, cb)
+    rid = str(qd.get("id") or ""); vid = rid[3:] if rid.startswith("al_") else rid
+    if any(x in pl for x in ("/getalbum","/getsong","/getmusicdirectory")):
+        if vid not in _YL and _RE.match(r"^[A-Za-z0-9_-]{11}$", vid):
+            await lp.run_in_executor(_POOL, _yt_search, vid)
+        if vid in _YL:
+            s = _YL[vid]; rt = _E.Element("subsonic-response", status="ok")
+            if "song" in pl: _E.SubElement(rt, "song", **s)
+            else:
+                tg = "directory" if "directory" in pl else "album"
+                al = _E.SubElement(rt, tg, id="al_"+vid, parent=s["artistId"], isDir="true", name=s["album"], title=s["album"], album=s["album"], artist=s["artist"], artistId=s["artistId"], coverArt=vid, songCount="1", duration=s["duration"], playCount="1", created=s["created"], year="2026", genre="YouTube")
+                _E.SubElement(al, "child" if tg=="directory" else "song", **s)
+            return _fmt(rt, js, cb)
     if rid.startswith("ar_") and "/getartist" in pl and "getartists" not in pl:
         als = [s for s in _YL.values() if s.get("artistId") == rid]
         rt = _E.Element("subsonic-response", status="ok")
@@ -1060,13 +1191,16 @@ async def _umw(req, call_next):
     if "getalbumlist" in pl or "getrandomsongs" in pl or "gettopsongs" in pl:
         if not _YL: await lp.run_in_executor(_POOL, _yt_search, "Thùy Dung Lệ Quyên Bolero")
         mrt = _E.Element("subsonic-response", status="ok")
+        off = int(qd.get("offset") or 0)
         if "albumlist" in pl:
             mc = _E.SubElement(mrt, "albumList2" if "2" in pl else "albumList")
-            for s in list(_YL.values())[:15]:
-                _E.SubElement(mc, "album", id="al_"+s["id"], parent=s["artistId"], isDir="true", name=s["album"], title=s["album"], album=s["album"], artist=s["artist"], artistId=s["artistId"], coverArt=s["id"], songCount="1", duration=s["duration"], playCount="1", created=s["created"], year="2026", genre="YouTube")
+            if off == 0 and qd.get("type","") != "starred":
+                for s in [x for x in _YL.values() if not str(x.get("id","")).startswith("loc_")][:12]:
+                    _E.SubElement(mc, "album", id="al_"+s["id"], parent=s["artistId"], isDir="true", name=s["album"], title=s["album"], album=s["album"], artist=s["artist"], artistId=s["artistId"], coverArt=s["id"], songCount="1", duration=s["duration"], playCount="1", created=s["created"], year="2026", genre="YouTube")
         else:
             mc = _E.SubElement(mrt, "topSongs" if "top" in pl else "randomSongs")
-            for s in list(_YL.values())[:15]: _E.SubElement(mc, "song", **s)
+            for s in [x for x in _YL.values() if not str(x.get("id","")).startswith("loc_")][:12]:
+                _E.SubElement(mc, "song", **s)
     else:
         resp = await call_next(req)
         body = b"".join([c async for c in resp.body_iterator])
@@ -1079,173 +1213,14 @@ async def _umw(req, call_next):
         elif len(hrt) > 0: _ilv(mrt[0], hrt[0])
     return _fmt(mrt, js, cb) if mrt is not None else _R(content=b"", status_code=200, headers=_CORS)
 
-# --- K6 SAFE: MULTI-USER MANAGER & VOICE UI ---
-from fastapi.responses import HTMLResponse as _HR
-
-_USR_F = "/media/500GB/Mirasonic/users.json"
-try: _USERS = _J.load(open(_USR_F))
-except Exception: _USERS = {"banbe": "123456"}
-
-def _save_u():
-    try: _J.dump(_USERS, open(_USR_F, "w"))
-    except Exception: pass
-_save_u()
-
-def _check_auth(qd):
-    u = str(qd.get("u") or "").strip()
-    if not u: return True
-    all_u = {**_USERS, "admin": _OS.environ.get("MIRASONIC_PASSWORD", _PASS)}
-    if u not in all_u: return False
-    exp = str(all_u[u])
-    t, s = str(qd.get("t") or ""), str(qd.get("s") or "")
-    if t and s:
-        return _H.md5((exp + s).encode()).hexdigest().lower() == t.lower()
-    rp = str(qd.get("p") or "")
-    if rp.startswith("enc:"):
-        try: rp = bytes.fromhex(rp[4:]).decode("utf-8", "ignore")
-        except Exception: pass
-    return (not rp) or (rp == exp)
-
-@app.middleware("http")
-async def _auth_gate(req, call_next):
-    pl = req.url.path.lower()
-    if not pl.startswith("/rest/") or "/getcoverart" in pl or "/ping" in pl or req.method == "OPTIONS":
-        return await call_next(req)
-    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8","ignore"), keep_blank_values=True))
-    qd = dict(qi)
-    if not _check_auth(qd):
-        js = qd.get("f","").lower() in ("json","jsonp")
-        rt = _E.Element("subsonic-response", status="failed")
-        _E.SubElement(rt, "error", code="40", message="Sai tai khoan hoac mat khau!")
-        return _fmt(rt, js, qd.get("callback"))
-    mp = _OS.environ.get("MIRASONIC_PASSWORD", _PASS)
-    nqi = [(k, v) for k, v in qi if k not in ("u","p","t","s")] + [("u","admin"),("p",mp)]
-    req.scope["query_string"] = _ue(nqi).encode()
-    return await call_next(req)
-
 @app.get("/users", response_class=_HR)
 async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = ""):
     mp = _OS.environ.get("MIRASONIC_PASSWORD", _PASS)
     msg = ""
     if act and admin_pass != mp: msg = "<p style='color:#ff5555'>❌ Sai mật khẩu Admin!</p>"
     elif act == "add" and u and p:
-        _USERS[u.strip()] = p.strip(); _save_u(); msg = f"<p style='color:#1db954'>✅ Đã lưu tài khoản: <b>{u}</b></p>"
+        _USERS[u.strip()] = p.strip(); _save_u(); msg = f"<p style='color:#1db954'>✅ Đã lưu: <b>{u}</b></p>"
     elif act == "del" and u in _USERS:
         del _USERS[u]; _save_u(); msg = f"<p style='color:#ffb86c'>🗑️ Đã xóa: <b>{u}</b></p>"
     rows = "".join(f"<tr><td><b>{k}</b></td><td><code>{v}</code></td><td><a href='/users?act=del&u={k}&admin_pass={admin_pass}' style='color:#ff5555'>Xóa</a></td></tr>" for k, v in _USERS.items())
-    return f"""<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quản Lý Tài Khoản</title>
-    <style>body{{background:#121212;color:#fff;font-family:sans-serif;padding:20px;max-width:480px;margin:auto}}input,button{{width:100%;padding:10px;margin:6px 0;border-radius:6px;border:1px solid #333;background:#222;color:#fff;box-sizing:border-box}}button{{background:#1db954;border:none;font-weight:bold;cursor:pointer}}table{{width:100%;margin-top:15px;border-collapse:collapse}}td,th{{padding:10px;border-bottom:1px solid #333;text-align:left}}</style></head>
-    <body><h2>👥 Quản Lý Tài Khoản Bạn Bè</h2>{msg}
-    <form method='get' action='/users'><input type='hidden' name='act' value='add'>
-    <input name='admin_pass' type='password' placeholder='Mật khẩu Admin gốc (bắt buộc)' value='{admin_pass}' required>
-    <input name='u' placeholder='Tên tài khoản bạn bè (VD: linh)' required>
-    <input name='p' placeholder='Mật khẩu cho bạn bè (VD: 123456)' required>
-    <button type='submit'>➕ Thêm / Đổi Mật Khẩu</button></form>
-    <table><tr><th>Tài khoản</th><th>Mật khẩu</th><th>Thao tác</th></tr>{rows}</table></body></html>"""
-
-
-# --- K7: ADDON LOADER + WAVIO ARTWORK CACHE & INFO FIX ---
-_ART_DIR = "/data/art_cache" if _OS.path.isdir("/data") else "/tmp/art_cache"
-_OS.makedirs(_ART_DIR, exist_ok=True)
-_ART_SEM = _TH.Semaphore(4)
-_PNG_1X1 = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82"
-
-def _load_addon_opts():
-    global _HDD, _PASS, _MUSIC_DIR, _USR_F, _USERS
-    if _OS.path.exists("/data/options.json"):
-        try:
-            op = _J.load(open("/data/options.json"))
-            h = (op.get("hdd_server_url") or "").strip().rstrip("/").replace("mira.nhacuakhoa.online", "music.nhacuakhoa.online")
-            if h: _HDD = h
-            p = (op.get("password") or "").strip()
-            if p:
-                _PASS = p
-                _OS.environ["MIRASONIC_PASSWORD"] = p
-            m = (op.get("music_dir") or "").strip()
-            if m: _MUSIC_DIR = m
-        except Exception: pass
-    if _OS.path.isdir("/data"):
-        _USR_F = "/data/users.json"
-        if _OS.path.exists(_USR_F):
-            try: _USERS.update(_J.load(open(_USR_F)))
-            except Exception: pass
-
-_load_addon_opts()
-_POOL.submit(_init_hdd)
-
-@app.middleware("http")
-async def _wavio_mw(req, call_next):
-    _load_addon_opts()
-    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
-    if not pl.startswith("/rest/") or req.method == "OPTIONS":
-        return await call_next(req)
-    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8","ignore"), keep_blank_values=True))
-    qd = dict(qi)
-    lp = _A.get_running_loop()
-
-    if "/getcoverart" in pl:
-        cid = str(qd.get("id") or "").strip()
-        if not cid:
-            return _R(content=_PNG_1X1, media_type="image/png", headers=_CORS)
-        cf = _OS.path.join(_ART_DIR, _H.md5(cid.encode()).hexdigest() + ".img")
-        if _OS.path.exists(cf) and _OS.path.getsize(cf) > 100:
-            return _R(content=open(cf, "rb").read(), media_type="image/jpeg", headers={**_CORS, "Cache-Control": "public, max-age=604800"})
-
-        raw_id = cid[4:] if cid.startswith("hdd_") else (cid[3:] if cid.startswith(("al_","ar_")) else cid)
-        is_yt = bool(_RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) and not cid.startswith("hdd_") and (raw_id in _YL or cid.startswith(("al_","ar_")))
-
-        if (cid.startswith("hdd_") or not is_yt) and _HDD:
-            def _fetch_hdd_art():
-                with _ART_SEM:
-                    for cand in ([raw_id, "al-" + raw_id, "mf-" + raw_id] if not raw_id.startswith(("al-","mf-","ar-")) else [raw_id]):
-                        for _ in range(2):
-                            try:
-                                nqi = [(k, v) for k, v in qi if k not in ("id","f","u","p","t","s","v","c")] + [("id", cand)]
-                                cq = [x for x in _hdd_q(nqi) if x[0] != "f"]
-                                with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent":"Resonus"}), timeout=12, context=_CTX) as r:
-                                    if r.status == 200:
-                                        d = r.read()
-                                        if d and len(d) > 100 and not d.lstrip().startswith(b"<"):
-                                            open(cf, "wb").write(d)
-                                            return r.headers.get("Content-Type", "image/jpeg"), d
-                            except Exception:
-                                _TM.sleep(0.2)
-                return None
-            res = await lp.run_in_executor(_POOL, _fetch_hdd_art)
-            if res:
-                return _R(content=res[1], media_type=res[0], headers={**_CORS, "Cache-Control": "public, max-age=604800"})
-
-        m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
-        if m:
-            vid = m.group(1)
-            def _fetch_yt_art():
-                for rs in ("maxresdefault.jpg","sddefault.jpg","hqdefault.jpg"):
-                    try:
-                        with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{vid}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=5, context=_CTX) as r:
-                            if r.status == 200:
-                                d = r.read()
-                                if d and len(d) > 100:
-                                    open(cf, "wb").write(d)
-                                    return "image/jpeg", d
-                    except Exception: pass
-                return None
-            res = await lp.run_in_executor(_POOL, _fetch_yt_art)
-            if res:
-                return _R(content=res[1], media_type=res[0], headers={**_CORS, "Cache-Control": "public, max-age=604800"})
-
-        return _R(content=_PNG_1X1, media_type="image/png", headers=_CORS)
-
-    if any(x in pl for x in ("getartistinfo","getalbuminfo","getlyrics","getsimilarsongs","gettopsongs")):
-        fv = qd.get("f","").lower()
-        js = fv in ("json","jsonp") or "application/json" in req.headers.get("accept","").lower()
-        cb = qd.get("callback") if fv == "jsonp" else None
-        rid = str(qd.get("id") or "")
-        if rid.startswith("hdd_") and _HDD:
-            hrt = await lp.run_in_executor(_POOL, _hdd_xml, p, qi)
-            if hrt is not None: return _fmt(hrt, js, cb)
-        rt = _E.Element("subsonic-response", status="ok")
-        tg = "artistInfo2" if "artistinfo2" in pl else ("artistInfo" if "artistinfo" in pl else ("albumInfo" if "albuminfo" in pl else ("lyrics" if "lyrics" in pl else ("topSongs" if "topsongs" in pl else "similarSongs2"))))
-        _E.SubElement(rt, tg)
-        return _fmt(rt, js, cb)
-
-    return await call_next(req)
+    return f"<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Users</title><style>body{{background:#121212;color:#fff;font-family:sans-serif;padding:20px;max-width:480px;margin:auto}}input,button{{width:100%;padding:10px;margin:6px 0;border-radius:6px;border:1px solid #333;background:#222;color:#fff;box-sizing:border-box}}button{{background:#1db954;border:none;font-weight:bold}}table{{width:100%;margin-top:15px;border-collapse:collapse}}td,th{{padding:10px;border-bottom:1px solid #333;text-align:left}}</style></head><body><h2>👥 Quản Lý Tài Khoản</h2>{msg}<form method='get' action='/users'><input type='hidden' name='act' value='add'><input name='admin_pass' type='password' placeholder='Mật khẩu Admin' value='{admin_pass}' required><input name='u' placeholder='Tài khoản bạn bè' required><input name='p' placeholder='Mật khẩu' required><button type='submit'>➕ Lưu Tài Khoản</button></form><table><tr><th>User</th><th>Pass</th><th>Xóa</th></tr>{rows}</table></body></html>"
