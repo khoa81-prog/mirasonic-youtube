@@ -1232,11 +1232,25 @@ async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = "
 
 
 
-# --- K8: TRUE 16:9 SQUARE CROP (NO BLACK BARS) & LIVE SIMILAR SONGS ---
-_ART_DIR = "/data/art_cache_v5" if _OS.path.isdir("/data") else "/tmp/art_cache_v5"
+
+# --- K8: YOUTUBE MUSIC (YTMUSICAPI) + YOUTUBE + HDD & RADIO ENGINE ---
+import sys as _SYS
+try:
+    from ytmusicapi import YTMusic as _YTMusic
+except Exception:
+    _SP.run([_SYS.executable, "-m", "pip", "install", "-q", "ytmusicapi"], check=False)
+    try:
+        from ytmusicapi import YTMusic as _YTMusic
+    except Exception:
+        _SP.run([_SYS.executable, "-m", "pip", "install", "-q", "--break-system-packages", "ytmusicapi"], check=False)
+        from ytmusicapi import YTMusic as _YTMusic
+
+_YTM = _YTMusic()
+_ART_DIR = "/data/art_cache_v6" if _OS.path.isdir("/data") else "/tmp/art_cache_v6"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_RAM = {}
 _ART_MAP = {}
+_YTM_THUMB = {}
 
 def _to_hdd_jpg(d):
     try:
@@ -1247,11 +1261,111 @@ def _to_hdd_jpg(d):
 
 def _to_yt_jpg(d):
     try:
-        # Cắt bỏ hoàn toàn 2 dải đen 4:3 trên dưới của hqdefault/sddefault bằng khung chuẩn 16:9 (iw*9/16)
         p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf","crop=iw*9/16:iw*9/16,scale=400:400:flags=lanczos","-q:v","3","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=4)
         if p.returncode == 0 and len(p.stdout) > 300: return p.stdout
     except Exception: pass
     return _to_hdd_jpg(d)
+
+def _parse_dur(it):
+    if it.get("duration_seconds"):
+        try: return str(int(it["duration_seconds"]))
+        except Exception: pass
+    ds = str(it.get("duration") or it.get("length") or "")
+    if ":" in ds:
+        pts = [int(x) for x in ds.split(":") if x.isdigit()]
+        if len(pts) == 2: return str(pts[0]*60 + pts[1])
+        if len(pts) == 3: return str(pts[0]*3600 + pts[1]*60 + pts[2])
+    return "240"
+
+def _ytm_to_song(it, is_vid=False):
+    vid = str(it.get("videoId") or it.get("id") or "").strip()
+    if not _RE.match(r"^[A-Za-z0-9_-]{11}$", vid): return None
+    tit = str(it.get("title") or "YouTube Music").strip()
+    arts = it.get("artists") or []
+    art = ", ".join(str(a.get("name","")).strip() for a in arts if isinstance(a, dict) and a.get("name")).strip()
+    if not art:
+        art = str(it.get("artist") or it.get("uploader") or it.get("channel") or "YouTube Music").strip()
+    if art.lower() == "youtube": art = "YouTube Music"
+    alb_obj = it.get("album")
+    alb = str(alb_obj.get("name") if isinstance(alb_obj, dict) else (alb_obj or "")).strip()
+    if not alb:
+        alb = f"[YT] {tit}" if is_vid else f"{art} - Single"
+    dur = _parse_dur(it)
+    arid = "ar_" + _H.md5(art.lower().encode()).hexdigest()[:10]
+    ths = it.get("thumbnails") or it.get("thumbnail") or []
+    if isinstance(ths, list) and ths:
+        tu = str(ths[-1].get("url") or "")
+        if "googleusercontent.com" in tu or "ggpht.com" in tu:
+            _YTM_THUMB[vid] = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w480-h480-l90-rj", tu)
+    s = {
+        "id": vid, "parent": "al_" + vid, "isDir": "false",
+        "title": tit, "album": alb, "artist": art, "track": "1",
+        "year": str(it.get("year") or "2026"),
+        "genre": "YouTube" if is_vid else "YouTube Music",
+        "coverArt": vid, "size": "8000000", "contentType": "audio/aac",
+        "suffix": "aac", "duration": dur, "bitRate": "256",
+        "path": f"{art}/{alb}/{tit}.aac", "isVideo": "false",
+        "created": "2026-01-01T00:00:00.000Z",
+        "albumId": "al_" + vid, "artistId": arid, "type": "music"
+    }
+    _YL[vid] = s
+    return s
+
+def _yt_search(q, st="searchResult3"):
+    rt = _E.Element("subsonic-response", status="ok")
+    sr = _E.SubElement(rt, st)
+    q = str(q or "").strip()
+    if not q: return rt
+
+    # Nếu truyền vào đúng 1 mã videoId 11 ký tự thì lấy chi tiết từ YouTube Music
+    if _RE.match(r"^[A-Za-z0-9_-]{11}$", q) and " " not in q:
+        try:
+            wp = _YTM.get_watch_playlist(videoId=q, limit=1)
+            tks = wp.get("tracks") or []
+            if tks:
+                s = _ytm_to_song(tks[0], is_vid=False)
+                if s:
+                    _E.SubElement(sr, "song", **s)
+                    return rt
+        except Exception: pass
+
+    f_songs = _POOL.submit(lambda: _YTM.search(q, filter="songs", limit=14))
+    f_vids  = _POOL.submit(lambda: _YTM.search(q, filter="videos", limit=10))
+    try: ytm_songs = f_songs.result(timeout=6) or []
+    except Exception: ytm_songs = []
+    try: ytm_vids = f_vids.result(timeout=6) or []
+    except Exception: ytm_vids = []
+
+    s_list, v_list = [], []
+    for it in ytm_songs:
+        s = _ytm_to_song(it, is_vid=False)
+        if s: s_list.append(s)
+    for it in ytm_vids:
+        s = _ytm_to_song(it, is_vid=True)
+        if s: v_list.append(s)
+
+    # Đan xen: 2 bài YouTube Music chính thức + 1 video YouTube sân khấu/Remix
+    merged, seen, seen_ar = [], set(), set()
+    i, j = 0, 0
+    while i < len(s_list) or j < len(v_list):
+        for _ in range(2):
+            if i < len(s_list):
+                if s_list[i]["id"] not in seen:
+                    seen.add(s_list[i]["id"]); merged.append(s_list[i])
+                i += 1
+        if j < len(v_list):
+            if v_list[j]["id"] not in seen:
+                seen.add(v_list[j]["id"]); merged.append(v_list[j])
+            j += 1
+
+    for s in merged:
+        arid = s["artistId"]
+        if arid not in seen_ar and len(seen_ar) < 5:
+            seen_ar.add(arid)
+            _E.SubElement(sr, "artist", id=arid, name=s["artist"], coverArt=s["id"], albumCount="10")
+        _E.SubElement(sr, "album", id="al_"+s["id"], parent=arid, isDir="true", name=s["album"], title=s["album"], album=s["album"], artist=s["artist"], artistId=arid, coverArt=s["id"], songCount="1", duration=s["duration"], created=s["created"], year=s["year"], genre=s["genre"])
+        _E.SubElement(sr, "song", **s)
+    return rt
 
 def _get_art_bytes(cid):
     if not cid: return None
@@ -1261,9 +1375,10 @@ def _get_art_bytes(cid):
         d = open(cf, "rb").read()
         if len(_ART_RAM) < 500: _ART_RAM[cid] = d
         return d
-    raw_id = _RE.sub(r"^(hdd_|yt5_|al_|ar_)+", "", cid)
-    is_yt = cid.startswith("yt5_") or (bool(_RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) and not cid.startswith("hdd_") and (raw_id in _YL or cid.startswith(("al_","ar_"))))
-    if (cid.startswith("hdd_") or not is_yt) and _HDD:
+    is_hdd = cid.startswith(("hdd_","hdd6_"))
+    raw_id = _RE.sub(r"^(hdd6_|hdd_|yt6_|yt5_|al_|ar_)+", "", cid)
+    is_yt = cid.startswith(("yt5_","yt6_")) or (bool(_RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) and not is_hdd and (raw_id in _YL or cid.startswith(("al_","ar_"))))
+    if (is_hdd or not is_yt) and _HDD:
         alid = _ART_MAP.get(raw_id, "")
         cands = []
         for x in ([raw_id, "al-"+alid, alid, "al-"+raw_id, "mf-"+raw_id] if alid else [raw_id, "al-"+raw_id, "mf-"+raw_id, raw_id[3:] if raw_id.startswith(("al-","mf-")) else ""]):
@@ -1281,14 +1396,23 @@ def _get_art_bytes(cid):
         qt = _HDD_META.get(raw_id)
         if qt:
             try:
-                with _YTDLP.YoutubeDL({"extract_flat":"in_playlist","quiet":True,"no_warnings":True,"nocheckcertificate":True}) as y:
-                    inf = y.extract_info(f"ytsearch1:{qt}", download=False)
-                entries = inf.get("entries") or []
-                if entries and entries[0].get("id"): raw_id = str(entries[0]["id"])
+                res = _YTM.search(qt, filter="songs", limit=1)
+                if res and res[0].get("videoId"):
+                    _ytm_to_song(res[0], is_vid=False)
+                    raw_id = str(res[0]["videoId"])
             except Exception: pass
     m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
     if m:
         vid = m.group(1)
+        # 1. Ưu tiên ảnh bìa vuông 1:1 gốc từ YouTube Music (lh3.googleusercontent.com)
+        if vid in _YTM_THUMB:
+            try:
+                with _U.urlopen(_U.Request(_YTM_THUMB[vid], headers={"User-Agent":"Mozilla/5.0"}), timeout=4, context=_CTX) as r:
+                    d = r.read()
+                    if r.status == 200 and len(d) > 300:
+                        d = _to_hdd_jpg(d); open(cf, "wb").write(d); _ART_RAM[cid] = d; return d
+            except Exception: pass
+        # 2. Nếu là video YouTube thường, cắt bỏ dải đen 4:3 bằng khung 16:9 chính giữa
         for rs in ("maxresdefault.jpg","hqdefault.jpg","mqdefault.jpg"):
             try:
                 with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{vid}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=4, context=_CTX) as r:
@@ -1299,41 +1423,53 @@ def _get_art_bytes(cid):
     return None
 
 def _clean_seed(s):
-    s = _RE.sub(r"\[HDD\]|\b(Official|MV|Video|Audio|Lyrics|HD|4K|YouTube|Channel|Music|Full|Bonus)\b", " ", str(s or ""), flags=_RE.I)
+    s = _RE.sub(r"\[HDD\]|\[YT\]|\b(Official|MV|Video|Audio|Lyrics|HD|4K|YouTube|Music|Channel|Full|Single)\b", " ", str(s or ""), flags=_RE.I)
     s = _RE.sub(r"[^\w\sÀ-ỹ]", " ", s)
     return " ".join(s.split())
 
 def _build_similar(rid, tag):
-    raw = _RE.sub(r"^(hdd_|yt5_|al_|ar_)+", "", str(rid or ""))
-    title, artist = "", ""
-    if raw in _YL:
-        title = _YL[raw].get("title","")
-        artist = _YL[raw].get("artist","")
+    is_hdd = str(rid or "").startswith(("hdd_","hdd6_"))
+    raw = _RE.sub(r"^(hdd6_|hdd_|yt6_|yt5_|al_|ar_)+", "", str(rid or ""))
+    title, artist, seed_vid = "", "", ""
+    if _RE.match(r"^[A-Za-z0-9_-]{11}$", raw) and not is_hdd:
+        seed_vid = raw
+        if raw in _YL:
+            title = _YL[raw].get("title","")
+            artist = _YL[raw].get("artist","")
     if not title:
         for tg, at, _ in _H_IDX:
-            aid = str(at.get("id","")).replace("hdd_","")
+            aid = _RE.sub(r"^(hdd6_|hdd_)+", "", str(at.get("id","")))
             if aid in (raw, "al-"+raw, "mf-"+raw, "ar-"+raw):
                 title = at.get("title") or at.get("name") or ""
                 artist = at.get("artist") or ""
                 break
     if not title and raw in _HDD_META:
         title = _HDD_META[raw]
-    if not title and _HDD and raw:
-        for ep in ("/rest/getSong.view", "/rest/getAlbum.view"):
-            x = _hdd_xml(ep, [("id", raw)])
-            if x is not None and len(x) > 0:
-                a = x[0].attrib
-                title = a.get("title") or a.get("name") or ""
-                artist = a.get("artist") or ""
-                if title: break
 
     c_art = _clean_seed(artist)
     c_tit = _clean_seed(title)
-    q_words = (c_art + " " + c_tit).split()
-    search_q = (" ".join(q_words[:6]) + " tuyển chọn") if q_words else "Bolero Nhạc Vàng Tuyển Chọn"
+    if not seed_vid:
+        q_str = (c_art + " " + c_tit).strip() or "Bolero Lệ Quyên Bằng Kiều"
+        try:
+            res = _YTM.search(q_str, filter="songs", limit=1)
+            if res and res[0].get("videoId"):
+                seed_vid = str(res[0]["videoId"])
+        except Exception: pass
+
+    ytm_songs = []
+    seen = {raw, "hdd_"+raw, "al-"+raw, "mf-"+raw, seed_vid}
+    if seed_vid:
+        try:
+            wp = _YTM.get_watch_playlist(videoId=seed_vid, limit=25)
+            for t in (wp.get("tracks") or []):
+                s = _ytm_to_song(t, is_vid=False)
+                if s and s["id"] not in seen:
+                    seen.add(s["id"])
+                    ytm_songs.append(s)
+                    if not c_art and s.get("artist"): c_art = _clean_seed(s["artist"])
+        except Exception: pass
 
     hdd_songs = []
-    seen = {raw, "hdd_"+raw, "al-"+raw, "mf-"+raw}
     kw_norm = [w for w in _no_acc(c_art + " " + c_tit).split() if len(w) > 2]
     if kw_norm and _H_IDX:
         scored = []
@@ -1344,35 +1480,28 @@ def _build_similar(rid, tag):
                 score = sum(3 if w in _no_acc(at.get("artist","")) else 1 for w in kw_norm if w in txt)
                 if score > 0: scored.append((score, at))
         scored.sort(key=lambda x: x[0], reverse=True)
-        for _, at in scored[:15]:
+        for _, at in scored[:12]:
             seen.add(at.get("id",""))
             hdd_songs.append(dict(at))
 
-    yt_songs = []
-    try:
-        yrt = _yt_search(search_q, "searchResult3")
-        if yrt is not None and len(yrt) > 0:
-            for x in yrt[0]:
-                sid = str(x.attrib.get("id",""))
-                if x.tag == "song" and sid not in seen and not sid.startswith("loc_"):
-                    seen.add(sid)
-                    yt_songs.append(dict(x.attrib))
-    except Exception: pass
-
     rt = _E.Element("subsonic-response", status="ok")
     mc = _E.SubElement(rt, tag)
-    for i in range(max(len(hdd_songs), len(yt_songs))):
+    for i in range(max(len(hdd_songs), len(ytm_songs))):
+        if i < len(ytm_songs): _E.SubElement(mc, "song", **ytm_songs[i])
         if i < len(hdd_songs): _E.SubElement(mc, "song", **hdd_songs[i])
-        if i < len(yt_songs): _E.SubElement(mc, "song", **yt_songs[i])
     return rt
 
-_orig_fmt = _fmt
-def _fmt(rt, js, cb=None):
+def _fmt_v6(rt, js, cb=None):
     for x in rt.iter():
         ca = x.attrib.get("coverArt")
-        if ca and not str(ca).startswith(("hdd_","yt5_")):
-            x.attrib["coverArt"] = "yt5_" + str(ca)
+        if ca:
+            raw_ca = _RE.sub(r"^(hdd6_|hdd_|yt6_|yt5_)+", "", str(ca))
+            if str(ca).startswith(("hdd_","hdd6_")) or str(x.attrib.get("id","")).startswith("hdd_"):
+                x.attrib["coverArt"] = "hdd6_" + raw_ca
+            else:
+                x.attrib["coverArt"] = "yt6_" + raw_ca
     return _orig_fmt(rt, js, cb)
+_fmt = _fmt_v6
 
 @app.middleware("http")
 async def _sim_mw(req, call_next):
@@ -1394,4 +1523,6 @@ async def _sim_mw(req, call_next):
         return _fmt(rt, js, cb)
     return await call_next(req)
 
+_YL.clear(); _SCACHE.clear()
 _POOL.submit(_init_hdd)
+_POOL.submit(_yt_search, "Lệ Quyên Bằng Kiều Thùy Dung Bolero")
