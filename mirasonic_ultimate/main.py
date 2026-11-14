@@ -1228,22 +1228,65 @@ async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = "
 
 
 
-# --- K8: ULTRA-SHARP 500x500 CAR WIDGET & PLAYER FIX ---
-_ART_SZ = 500
-_ART_DIR = "/data/art_cache_500_hq" if _OS.path.isdir("/data") else "/tmp/art_cache_500_hq"
+
+# --- K8: INSTANT RAM ARTWORK (<20ms) & SMART SONIC RADIO ---
+_ART_DIR = "/data/art_cache_fast" if _OS.path.isdir("/data") else "/tmp/art_cache_fast"
 _OS.makedirs(_ART_DIR, exist_ok=True)
+_ART_RAM = {}
 _ART_MAP = {}
 
-def _to_jpg(d):
+def _to_fast_jpg(d):
     try:
-        vf = f"scale={_ART_SZ}:{_ART_SZ}:force_original_aspect_ratio=increase:flags=lanczos,crop={_ART_SZ}:{_ART_SZ},unsharp=3:3:0.6:3:3:0.0"
-        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf",vf,"-q:v","1","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=6)
-        if p.returncode == 0 and len(p.stdout) > 500: return p.stdout
+        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf","scale=400:400:force_original_aspect_ratio=increase,crop=400:400","-q:v","5","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=4)
+        if p.returncode == 0 and len(p.stdout) > 300: return p.stdout
     except Exception: pass
     return d
 
+def _get_art_bytes(cid):
+    if not cid: return None
+    if cid in _ART_RAM: return _ART_RAM[cid]
+    cf = _OS.path.join(_ART_DIR, _H.md5(cid.encode()).hexdigest() + ".jpg")
+    if _OS.path.exists(cf) and _OS.path.getsize(cf) > 300:
+        d = open(cf, "rb").read()
+        if len(_ART_RAM) < 500: _ART_RAM[cid] = d
+        return d
+    raw_id = cid[4:] if cid.startswith("hdd_") else (cid[3:] if cid.startswith(("al_","ar_")) else cid)
+    is_yt = bool(_RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) and not cid.startswith("hdd_") and (raw_id in _YL or cid.startswith(("al_","ar_")))
+    if (cid.startswith("hdd_") or not is_yt) and _HDD:
+        alid = _ART_MAP.get(raw_id, "")
+        cands = []
+        for x in ([raw_id, "al-"+alid, alid, "al-"+raw_id, "mf-"+raw_id] if alid else [raw_id, "al-"+raw_id, "mf-"+raw_id, raw_id[3:] if raw_id.startswith(("al-","mf-")) else ""]):
+            if x and x not in cands: cands.append(x)
+        with _ART_SEM:
+            for cand in cands:
+                try:
+                    cq = [x for x in _hdd_q([("id", cand), ("size", "400")]) if x[0] != "f"]
+                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent":"Resonus"}), timeout=6, context=_CTX) as r:
+                        d = r.read()
+                        if r.status == 200 and len(d) > 300 and not d.lstrip().startswith(b"<"):
+                            if not d.startswith(b"\xff\xd8") or len(d) > 90000: d = _to_fast_jpg(d)
+                            open(cf, "wb").write(d); _ART_RAM[cid] = d; return d
+                except Exception: pass
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
+    if m:
+        vid = m.group(1)
+        for rs in ("hqdefault.jpg","mqdefault.jpg","sddefault.jpg"):
+            try:
+                with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{vid}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=4, context=_CTX) as r:
+                    d = r.read()
+                    if r.status == 200 and len(d) > 300:
+                        d = _to_fast_jpg(d); open(cf, "wb").write(d); _ART_RAM[cid] = d; return d
+            except Exception: pass
+    return None
+
+def _prewarm_arts(ids):
+    for cid in ids[:15]:
+        try: _get_art_bytes(cid)
+        except Exception: pass
+
 def _pfx(el):
     _cln(el)
+    warm = []
     for x in el.iter():
         a = x.attrib
         for k in ("artistImageUrl","smallImageUrl","mediumImageUrl","largeImageUrl"):
@@ -1258,56 +1301,14 @@ def _pfx(el):
             elif not ca:
                 ca = ("al-" + rid) if x.tag == "album" and not rid.startswith(("al-","mf-","ar-")) else rid
             a["coverArt"] = ca
-            qt = f"{a.get('artist','')} {a.get('title') or a.get('name') or a.get('album') or ''}".replace("[HDD]","").strip()
-            if qt:
-                for k in (rid, ca, alid, "al-"+alid, "mf-"+rid):
-                    if k: _HDD_META[k] = qt
+            warm.append("hdd_" + ca)
         for k in _IDS:
             if k in a and a[k] and not str(a[k]).startswith("hdd_"): a[k] = "hdd_" + str(a[k])
         if x.tag in ("song","child","entry","album"):
             for f in ("album","name","title"):
                 if f in a and a[f] and (f == "album" or x.tag == "album" or a.get("isDir") == "true") and not a[f].startswith("[HDD]"):
                     a[f] = "[HDD] " + a[f]
+    if warm: _POOL.submit(_prewarm_arts, list(dict.fromkeys(warm)))
     return el
-
-def _get_art_bytes(cid):
-    cf = _OS.path.join(_ART_DIR, _H.md5(cid.encode()).hexdigest() + ".jpg")
-    if _OS.path.exists(cf) and _OS.path.getsize(cf) > 500:
-        return open(cf, "rb").read()
-    raw_id = cid[4:] if cid.startswith("hdd_") else (cid[3:] if cid.startswith(("al_","ar_")) else cid)
-    is_yt = bool(_RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) and not cid.startswith("hdd_") and (raw_id in _YL or cid.startswith(("al_","ar_")))
-    if (cid.startswith("hdd_") or not is_yt) and _HDD:
-        alid = _ART_MAP.get(raw_id, "")
-        cands = []
-        for x in ([raw_id, "al-"+alid, alid, "al-"+raw_id, "mf-"+raw_id] if alid else [raw_id, "al-"+raw_id, "mf-"+raw_id, raw_id[3:] if raw_id.startswith(("al-","mf-")) else ""]):
-            if x and x not in cands: cands.append(x)
-        with _ART_SEM:
-            for cand in cands:
-                try:
-                    cq = [x for x in _hdd_q([("id", cand), ("size", "800")]) if x[0] != "f"]
-                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent":"Resonus"}), timeout=10, context=_CTX) as r:
-                        d = r.read()
-                        if r.status == 200 and len(d) > 500 and not d.lstrip().startswith(b"<"):
-                            d = _to_jpg(d); open(cf, "wb").write(d); return d
-                except Exception: pass
-        qt = _HDD_META.get(raw_id)
-        if qt:
-            try:
-                with _YTDLP.YoutubeDL({"extract_flat":"in_playlist","quiet":True,"no_warnings":True,"nocheckcertificate":True}) as y:
-                    inf = y.extract_info(f"ytsearch1:{qt}", download=False)
-                entries = inf.get("entries") or []
-                if entries and entries[0].get("id"): raw_id = str(entries[0]["id"])
-            except Exception: pass
-    m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
-    if m:
-        vid = m.group(1)
-        for rs in ("maxresdefault.jpg","sddefault.jpg","hqdefault.jpg"):
-            try:
-                with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{vid}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=5, context=_CTX) as r:
-                    d = r.read()
-                    if r.status == 200 and len(d) > 500:
-                        d = _to_jpg(d); open(cf, "wb").write(d); return d
-            except Exception: pass
-    return None
 
 _POOL.submit(_init_hdd)
