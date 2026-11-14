@@ -752,7 +752,7 @@ from starlette.responses import Response as _R, StreamingResponse as _SR
 import yt_dlp as _YTDLP
 
 _E.register_namespace("", "http://subsonic.org/restapi")
-_HDD, _PASS = "https://music.nhacuakhoa.online", "changeme123"
+_HDD, _PASS = "https://music.nhacuakhoa.online", "Haidang06"
 _CTX, _POOL, _TLS = _S._create_unverified_context(), _TP(max_workers=12), _TH.local()
 _UC, _JOBS, _JL, _YL, _SCACHE, _H_IDX = {}, {}, _TH.Lock(), {}, {}, []
 _S_SEQ, _LAST_Q = 0, ""
@@ -1079,58 +1079,66 @@ async def _umw(req, call_next):
         elif len(hrt) > 0: _ilv(mrt[0], hrt[0])
     return _fmt(mrt, js, cb) if mrt is not None else _R(content=b"", status_code=200, headers=_CORS)
 
-# --- K5: ADDON CONFIG + LOCAL MUSIC_DIR + VOICE SEARCH ---
+# --- K6 SAFE: MULTI-USER MANAGER & VOICE UI ---
 from fastapi.responses import HTMLResponse as _HR
 
-_OPT_F = "/data/options.json"
-_MUSIC_DIR = "/media/500GB/Music"
-if _OS.path.exists(_OPT_F):
-    try:
-        _opts = _J.load(open(_OPT_F))
-        _MUSIC_DIR = _opts.get("music_dir") or _MUSIC_DIR
-        _HDD = (_opts.get("hdd_server_url") or _HDD).rstrip("/")
-        _PASS = _opts.get("password") or _PASS
+_USR_F = "/media/500GB/Mirasonic/users.json"
+try: _USERS = _J.load(open(_USR_F))
+except Exception: _USERS = {"banbe": "123456"}
+
+def _save_u():
+    try: _J.dump(_USERS, open(_USR_F, "w"))
     except Exception: pass
+_save_u()
 
-_VOICE_RE = _RE.compile(r"^(hay\s+|xin\s+|cho\s+toi\s+|lam\s+on\s+)?(tim\s+kiem\s+|tim\s+|mo\s+|phat\s+|nghe\s+|bat\s+)?(bai\s+hat\s+|bai\s+|nhac\s+cua\s+|nhac\s+|ca\s+si\s+|album\s+)?", _RE.I)
+def _check_auth(qd):
+    u = str(qd.get("u") or "").strip()
+    if not u: return True
+    all_u = {**_USERS, "admin": _OS.environ.get("MIRASONIC_PASSWORD", _PASS)}
+    if u not in all_u: return False
+    exp = str(all_u[u])
+    t, s = str(qd.get("t") or ""), str(qd.get("s") or "")
+    if t and s:
+        return _H.md5((exp + s).encode()).hexdigest().lower() == t.lower()
+    rp = str(qd.get("p") or "")
+    if rp.startswith("enc:"):
+        try: rp = bytes.fromhex(rp[4:]).decode("utf-8", "ignore")
+        except Exception: pass
+    return (not rp) or (rp == exp)
 
-def _orig_vn_q(q):
-    q = _RE.sub(r"[?.!,;:]+$", "", str(q or "").strip())
-    nq = _no_acc(q)
-    m = _VOICE_RE.match(nq)
-    if m and len(q) > m.end():
-        q = q[m.end():].strip()
-    if not q or any(ord(c) > 127 for c in q): return q
-    try:
-        u = f"https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&hl=vi&gl=VN&q={_ue({'':q})[1:]}"
-        with _U.urlopen(_U.Request(u, headers={"User-Agent":"Mozilla/5.0"}), timeout=1.2, context=_CTX) as r:
-            sug = _J.loads(r.read().decode("utf-8","ignore"))[1]
-            for s in sug:
-                if _no_acc(s).startswith(_no_acc(q)): return s
-            if sug: return sug[0]
-    except Exception: pass
-    return q
+@app.middleware("http")
+async def _auth_gate(req, call_next):
+    pl = req.url.path.lower()
+    if not pl.startswith("/rest/") or "/getcoverart" in pl or "/ping" in pl or req.method == "OPTIONS":
+        return await call_next(req)
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8","ignore"), keep_blank_values=True))
+    qd = dict(qi)
+    if not _check_auth(qd):
+        js = qd.get("f","").lower() in ("json","jsonp")
+        rt = _E.Element("subsonic-response", status="failed")
+        _E.SubElement(rt, "error", code="40", message="Sai tai khoan hoac mat khau!")
+        return _fmt(rt, js, qd.get("callback"))
+    mp = _OS.environ.get("MIRASONIC_PASSWORD", _PASS)
+    nqi = [(k, v) for k, v in qi if k not in ("u","p","t","s")] + [("u","admin"),("p",mp)]
+    req.scope["query_string"] = _ue(nqi).encode()
+    return await call_next(req)
 
-_vn_q = _orig_vn_q
-
-def _scan_local_dir():
-    if not _OS.path.isdir(_MUSIC_DIR): return
-    for root, _, files in _OS.walk(_MUSIC_DIR):
-        for f in files:
-            if f.lower().endswith((".flac",".mp3",".m4a",".wav",".ogg")):
-                fp = _OS.path.join(root, f)
-                fid = "loc_" + _H.md5(fp.encode()).hexdigest()[:10]
-                ti = _OS.path.splitext(f)[0]
-                ar = _OS.path.basename(root) or "Local"
-                s = {"id":fid,"parent":"al_"+fid,"isDir":"false","title":ti,"album":f"[HDD] {ar}","artist":ar,"track":"1","year":"2026","genre":"Local","size":str(_OS.path.getsize(fp)),"contentType":"audio/flac","suffix":f.split(".")[-1].lower(),"duration":"240","bitRate":"900","path":fp,"isVideo":"false","created":"2026-01-01T00:00:00.000Z","albumId":"al_"+fid,"artistId":"ar_"+fid,"type":"music"}
-                _YL[fid] = s
-                _H_IDX.append(("song", s, _no_acc(f"{ti} {ar}")))
-
-_POOL.submit(_scan_local_dir)
-
-@app.get("/voice", response_class=_HR)
-async def _voice_ui():
-    return """<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Mirasonic Voice</title>
-    <style>body{background:#121212;color:#fff;font-family:sans-serif;text-align:center;padding:30px}button{width:110px;height:110px;border-radius:50%;border:none;background:#1db954;color:#fff;font-size:40px;cursor:pointer;box-shadow:0 0 25px #1db95488}button.rec{background:#e91429;animation:p 1s infinite}@keyframes p{50%{transform:scale(1.1)}}#q{margin:20px;font-size:20px;color:#b3b3b3}.s{background:#282828;margin:10px auto;padding:12px;border-radius:8px;max-width:420px;text-align:left;cursor:pointer}</style></head>
-    <body><h2>🎙️ Tìm Nhạc Bằng Giọng Nói</h2><button id='b' onclick='st()'>🎤</button><div id='q'>Chạm vào Micro và đọc tên bài hát / ca sĩ...</div><audio id='au' controls style='width:100%;max-width:420px;display:none;margin:15px auto'></audio><div id='rs'></div>
-    <script>const SR=window.SpeechRecognition||window.webkitSpeechRecognition;function st(){if(!SR){alert('Trình duyệt chưa hỗ trợ!');return;}const r=new SR();r.lang='vi-VN';const b=document.getElementById('b');b.className='rec';document.getElementById('q').innerText='Đang nghe đệ tử nói...';r.onresult=async(e)=>{b.className='';const t=e.results[0][0].transcript;document.getElementById('q').innerText='🔍 \"'+t+'\"';const res=await fetch('/rest/search3.view?u=admin&v=1.16.1&c=Voice&f=json&query='+encodeURIComponent(t));const d=await res.json();const sgs=(d['subsonic-response'].searchResult3?.song)||[];const box=document.getElementById('rs');box.innerHTML='';sgs.forEach(s=>{const dv=document.createElement('div');dv.className='s';dv.innerHTML='<b>'+s.title+'</b><br><small>'+s.artist+' • '+s.album+'</small>';dv.onclick=()=>{const a=document.getElementById('au');a.style.display='block';a.src='/rest/stream.view?u=admin&v=1.16.1&c=Voice&id='+s.id;a.play();};box.appendChild(dv);});};r.onerror=()=>{b.className='';};r.start();}</script></body></html>"""
+@app.get("/users", response_class=_HR)
+async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = ""):
+    mp = _OS.environ.get("MIRASONIC_PASSWORD", _PASS)
+    msg = ""
+    if act and admin_pass != mp: msg = "<p style='color:#ff5555'>❌ Sai mật khẩu Admin!</p>"
+    elif act == "add" and u and p:
+        _USERS[u.strip()] = p.strip(); _save_u(); msg = f"<p style='color:#1db954'>✅ Đã lưu tài khoản: <b>{u}</b></p>"
+    elif act == "del" and u in _USERS:
+        del _USERS[u]; _save_u(); msg = f"<p style='color:#ffb86c'>🗑️ Đã xóa: <b>{u}</b></p>"
+    rows = "".join(f"<tr><td><b>{k}</b></td><td><code>{v}</code></td><td><a href='/users?act=del&u={k}&admin_pass={admin_pass}' style='color:#ff5555'>Xóa</a></td></tr>" for k, v in _USERS.items())
+    return f"""<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Quản Lý Tài Khoản</title>
+    <style>body{{background:#121212;color:#fff;font-family:sans-serif;padding:20px;max-width:480px;margin:auto}}input,button{{width:100%;padding:10px;margin:6px 0;border-radius:6px;border:1px solid #333;background:#222;color:#fff;box-sizing:border-box}}button{{background:#1db954;border:none;font-weight:bold;cursor:pointer}}table{{width:100%;margin-top:15px;border-collapse:collapse}}td,th{{padding:10px;border-bottom:1px solid #333;text-align:left}}</style></head>
+    <body><h2>👥 Quản Lý Tài Khoản Bạn Bè</h2>{msg}
+    <form method='get' action='/users'><input type='hidden' name='act' value='add'>
+    <input name='admin_pass' type='password' placeholder='Mật khẩu Admin gốc (bắt buộc)' value='{admin_pass}' required>
+    <input name='u' placeholder='Tên tài khoản bạn bè (VD: linh)' required>
+    <input name='p' placeholder='Mật khẩu cho bạn bè (VD: 123456)' required>
+    <button type='submit'>➕ Thêm / Đổi Mật Khẩu</button></form>
+    <table><tr><th>Tài khoản</th><th>Mật khẩu</th><th>Thao tác</th></tr>{rows}</table></body></html>"""
