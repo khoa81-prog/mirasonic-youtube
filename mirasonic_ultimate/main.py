@@ -1143,12 +1143,89 @@ async def _users_ui(admin_pass: str = "", act: str = "", u: str = "", p: str = "
     <button type='submit'>➕ Thêm / Đổi Mật Khẩu</button></form>
     <table><tr><th>Tài khoản</th><th>Mật khẩu</th><th>Thao tác</th></tr>{rows}</table></body></html>"""
 
-# --- ADDON OPTIONS LOADER ---
-if _OS.path.exists("/data/options.json"):
-    try:
-        _op = _J.load(open("/data/options.json"))
-        _HDD = (_op.get("hdd_server_url") or "").strip().rstrip("/").replace("mira.nhacuakhoa.online", "music.nhacuakhoa.online")
-        _PASS = (_op.get("password") or "").strip()
-        _OS.environ["MIRASONIC_PASSWORD"] = _PASS
-        _POOL.submit(_init_hdd)
-    except Exception: pass
+# --- K7: WAVIO ARTWORK & INFO2 FIX ---
+_ART_CACHE = {}
+_PNG_1X1 = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82"
+
+@app.middleware("http")
+async def _wavio_mw(req, call_next):
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if not pl.startswith("/rest/") or req.method == "OPTIONS":
+        return await call_next(req)
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8","ignore"), keep_blank_values=True))
+    qd = dict(qi)
+    lp = _A.get_running_loop()
+
+    # 1. Xử lý triệt để Artwork cho Wavio (YouTube + HDD + Fallback)
+    if "/getcoverart" in pl:
+        cid = str(qd.get("id") or "").strip()
+        if not cid:
+            return _R(content=_PNG_1X1, media_type="image/png", headers=_CORS)
+        if cid in _ART_CACHE:
+            ct, data = _ART_CACHE[cid]
+            return _R(content=data, media_type=ct, headers={**_CORS, "Cache-Control": "public, max-age=86400"})
+
+        raw_id = cid[4:] if cid.startswith("hdd_") else (cid[3:] if cid.startswith(("al_","ar_")) else cid)
+        is_yt = bool(_RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) and not cid.startswith("hdd_") and (raw_id in _YL or cid.startswith(("al_","ar_")))
+
+        # Nếu không phải ID 11 ký tự của YouTube (hoặc có hdd_), ưu tiên lấy từ HDD Navidrome trước
+        if cid.startswith("hdd_") or not is_yt:
+            def _fetch_hdd_art():
+                for cand in ([raw_id, "al-" + raw_id, "mf-" + raw_id] if not raw_id.startswith(("al-","mf-","ar-")) else [raw_id]):
+                    try:
+                        nqi = [(k, v) for k, v in qi if k not in ("id","f","u","p","t","s","v","c")] + [("id", cand)]
+                        cq = [x for x in _hdd_q(nqi) if x[0] != "f"]
+                        with _U.urlopen(_U.Request(f"{_HDD}{p}?{_ue(cq)}", headers={"User-Agent":"Wavio"}), timeout=8, context=_CTX) as r:
+                            if r.status == 200:
+                                d = r.read()
+                                if d and not d.lstrip().startswith(b"<"):
+                                    return r.headers.get("Content-Type", "image/jpeg"), d
+                    except Exception: pass
+                return None
+            res = await lp.run_in_executor(_POOL, _fetch_hdd_art)
+            if res:
+                if len(_ART_CACHE) > 300: _ART_CACHE.clear()
+                _ART_CACHE[cid] = res
+                return _R(content=res[1], media_type=res[0], headers={**_CORS, "Cache-Control": "public, max-age=86400"})
+
+        # Lấy ảnh bìa YouTube (hoặc fallback nếu bài HDD lấy ảnh từ YouTube)
+        m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
+        if m:
+            vid = m.group(1)
+            def _fetch_yt_art():
+                for rs in ("maxresdefault.jpg","sddefault.jpg","hqdefault.jpg"):
+                    try:
+                        with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{vid}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=5, context=_CTX) as r:
+                            if r.status == 200: return "image/jpeg", r.read()
+                    except Exception: pass
+                return None
+            res = await lp.run_in_executor(_POOL, _fetch_yt_art)
+            if res:
+                _ART_CACHE[cid] = res
+                return _R(content=res[1], media_type=res[0], headers={**_CORS, "Cache-Control": "public, max-age=86400"})
+
+        return _R(content=_PNG_1X1, media_type="image/png", headers=_CORS)
+
+    # 2. Chống lỗi "Something went wrong" trên Wavio khi mở ArtistInfo / AlbumInfo / Lyrics / Similar
+    if any(x in pl for x in ("getartistinfo","getalbuminfo","getlyrics","getsimilarsongs","gettopsongs")):
+        fv = qd.get("f","").lower()
+        js = fv in ("json","jsonp") or "application/json" in req.headers.get("accept","").lower()
+        cb = qd.get("callback") if fv == "jsonp" else None
+        rid = str(qd.get("id") or "")
+        if rid.startswith("hdd_"):
+            hrt = await lp.run_in_executor(_POOL, _hdd_xml, p, qi)
+            if hrt is not None: return _fmt(hrt, js, cb)
+        if "artistinfo" in pl:
+            rt = _E.Element("subsonic-response", status="ok")
+            _E.SubElement(rt, "artistInfo2" if "2" in pl else "artistInfo")
+            return _fmt(rt, js, cb)
+        if "albuminfo" in pl:
+            rt = _E.Element("subsonic-response", status="ok")
+            _E.SubElement(rt, "albumInfo")
+            return _fmt(rt, js, cb)
+        if "lyrics" in pl:
+            rt = _E.Element("subsonic-response", status="ok")
+            _E.SubElement(rt, "lyrics")
+            return _fmt(rt, js, cb)
+
+    return await call_next(req)
