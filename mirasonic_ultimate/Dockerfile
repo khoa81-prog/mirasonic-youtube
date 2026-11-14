@@ -31,4 +31,4 @@ RUN pip install --no-cache-dir playwright==1.63.0 \
 RUN pip install --no-cache-dir -U yt-dlp && printf "%s\n" "--force-ipv4" "--geo-bypass" "--no-check-certificates" > /etc/yt-dlp.conf
 
 ENTRYPOINT []
-CMD ["sh", "-c", "export PATH=/app/.venv/bin:/usr/local/bin:$PATH; python3 worker.py >/dev/null 2>&1 & exec python3 -m uvicorn main:app --host 0.0.0.0 --port 8098"]
+CMD ["sh", "-c", "export PATH=/app/.venv/bin:/usr/local/bin:$PATH; eval $(python3 -c 'import json,os,shlex; op=json.load(open(\"/data/options.json\")) if os.path.exists(\"/data/options.json\") else {}; u=op.get(\"username\") or \"admin\"; p=op.get(\"password\") or \"admin\"; print(f\"export SUBSONIC_USER={shlex.quote(u)} SUBSONIC_PASSWORD={shlex.quote(p)} MIRASONIC_PASSWORD={shlex.quote(p)}\")'); python3 worker.py >/dev/null 2>&1 & exec python3 -m uvicorn main:app --host 0.0.0.0 --port 8098"]
