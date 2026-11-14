@@ -752,7 +752,7 @@ from starlette.responses import Response as _R, StreamingResponse as _SR
 import yt_dlp as _YTDLP
 
 _E.register_namespace("", "http://subsonic.org/restapi")
-_HDD, _PASS = "https://music.nhacuakhoa.online", "Haidang06"
+_HDD, _PASS = "https://music.nhacuakhoa.online", "changeme123"
 _CTX, _POOL, _TLS = _S._create_unverified_context(), _TP(max_workers=12), _TH.local()
 _UC, _JOBS, _JL, _YL, _SCACHE, _H_IDX = {}, {}, _TH.Lock(), {}, {}, []
 _S_SEQ, _LAST_Q = 0, ""

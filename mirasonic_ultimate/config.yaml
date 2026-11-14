@@ -16,7 +16,7 @@ options:
   music_dir: "/media/500GB/Music"
   hdd_server_url: "https://music.nhacuakhoa.online"
   username: "admin"
-  password: "Haidang06"
+  password: "changeme123"
 schema:
   music_dir: str
   hdd_server_url: str
