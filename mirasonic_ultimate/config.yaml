@@ -14,7 +14,7 @@ map:
   - data:rw
 options:
   music_dir: "/media/500GB/Music"
-  hdd_server_url: "https://music.nhacuakhoa.online"
+  hdd_server_url: "https://your-navidrome-url.com"
   username: "admin"
   password: "changeme123"
 schema:
