@@ -1,6 +1,6 @@
 name: "Mirasonic Ultimate"
 description: "Unified Subsonic Server gộp chung HDD + YouTube AAC 256kbps + Tìm kiếm giọng nói & Không dấu"
-version: "1.0.0"
+version: "1.0.1"
 slug: "mirasonic_ultimate"
 init: false
 arch:
@@ -13,12 +13,12 @@ map:
   - share:rw
   - data:rw
 options:
-  music_dir: "/media/500GB/Music"
-  hdd_server_url: "https://your-navidrome-url.com"
-  username: "admin"
-  password: "changeme123"
+  music_dir: ""
+  hdd_server_url: ""
+  username: ""
+  password: ""
 schema:
-  music_dir: str
-  hdd_server_url: str
-  username: str
-  password: password
+  music_dir: str?
+  hdd_server_url: str?
+  username: str?
+  password: password?
