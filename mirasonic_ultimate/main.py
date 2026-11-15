@@ -1651,7 +1651,8 @@ _POOL.submit(_yt_search, "Thùy Dung Lệ Quyên Bằng Kiều Salvatore Adamo")
 
 
 
-# --- K9: V1.2.5 ACCENT-AWARE SEARCH/ARTIST, NO DEADLOCK ALL-SONGS & CHANNEL VIDEOS ---
+
+# --- K9: V1.3.2 CRISP 500x500 ARTWORK, YOUTUBE THUMBNAIL FIX & HDD->YTM->YT ORDER ---
 import random as _RND
 import unicodedata as _UD
 import concurrent.futures as _CF
@@ -1660,7 +1661,7 @@ _REQ_POOL = _CF.ThreadPoolExecutor(max_workers=20)
 _SUB_POOL = _CF.ThreadPoolExecutor(max_workers=24)
 _ART_POOL = _CF.ThreadPoolExecutor(max_workers=12)
 
-_ART_DIR = "/data/art_cache_v15" if _OS.path.isdir("/data") else "/tmp/art_cache_v15"
+_ART_DIR = "/data/art_cache_v20" if _OS.path.isdir("/data") else "/tmp/art_cache_v20"
 _STAR_F  = "/data/starred_v10.json" if _OS.path.isdir("/data") else "/tmp/starred_v10.json"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_RAM.clear()
@@ -1704,25 +1705,19 @@ def _is_same_artist(target_art, cand_art, strict_acc=True):
     t_no, c_no = _no_acc(t_nfc), _no_acc(c_nfc)
     if not t_no or not c_no:
         return False
-
-    # Neu muc tieu co dau (VD: Thuy Dung vs Thuy. Dung, Dia Than Nhac Vang vs Dia)
     if strict_acc and _has_acc(t_nfc):
         if _has_acc(c_nfc):
             if t_nfc == c_nfc:
                 return True
             tw = [w for w in t_nfc.split() if len(w) > 1]
             cw = c_nfc.split()
-            # Tat ca cac tu co dau cua target phai nam trong candidate (KHONG cho phep chieu nguoc lai c in t)
             if len(tw) >= 2 and all(w in cw for w in tw) and t_nfc in c_nfc:
                 return True
             if len(tw) == 1 and len(cw) == 1 and tw[0] == cw[0]:
                 return True
             return False
         else:
-            # Neu ten kenh tren YouTube viet khong dau (ASCII), chi khop khi trung khop hoan toan 100%
             return t_no == c_no
-
-    # Truong hop khong dau
     if t_no == c_no:
         return True
     tw = [w for w in t_no.split() if len(w) > 1]
@@ -1737,7 +1732,6 @@ def _match_query_text(q, text):
     if _has_acc(q_nfc):
         q_words = [w for w in _RE.sub(r"[^\w\s]", " ", q_nfc).split() if w]
         t_words = _RE.sub(r"[^\w\s]", " ", t_nfc).split()
-        # Neu tu trong query co dau, bat buoc phai khop dung tu co dau do trong text
         for qw in q_words:
             if _has_acc(qw):
                 if qw not in t_words and qw not in t_nfc:
@@ -1756,8 +1750,8 @@ def _fix_url(u):
     if u.startswith("//"):
         u = "https:" + u
     if "yt3.ggpht.com" in u or "googleusercontent.com" in u:
-        u = _RE.sub(r"=s\d+[^/]*$", "=s400-c-k-c0x00ffffff-no-rj", u)
-        u = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w400-h400-l90-rj", u)
+        u = _RE.sub(r"=s\d+[^/]*$", "=s500-c-k-c0x00ffffff-no-rj", u)
+        u = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l95-rj", u)
     return u
 
 def _make_song(vid, tit, art, alb="", dur="240", is_vid=False, thumb_url=""):
@@ -1768,7 +1762,7 @@ def _make_song(vid, tit, art, alb="", dur="240", is_vid=False, thumb_url=""):
     if art.lower() in ("youtube", "various artists", ""): art = "YouTube Music"
     alb = _UD.normalize("NFC", str(alb or "")).strip() or tit
     if thumb_url and ("googleusercontent.com" in thumb_url or "ggpht.com" in thumb_url):
-        _YTM_THUMB[vid] = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w480-h480-l90-rj", thumb_url)
+        _YTM_THUMB[vid] = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l95-rj", thumb_url)
     arid = "ar_" + _H.md5(_nfc(art).encode("utf-8")).hexdigest()[:10]
     _ARTIST_NAMES[arid] = art
     d_int = int(dur) if str(dur).isdigit() and int(dur) > 0 else 240
@@ -1789,6 +1783,19 @@ def _make_song(vid, tit, art, alb="", dur="240", is_vid=False, thumb_url=""):
     _YL[vid] = s
     return s
 
+def _hdd_first(mc, hc):
+    bt = {}
+    for x in hc:
+        bt.setdefault(x.tag, []).append(x)
+    for x in mc:
+        bt.setdefault(x.tag, []).append(x)
+    out = []
+    for tg in ("artist", "album", "song"):
+        out.extend(bt.pop(tg, []))
+    for _, lst in bt.items():
+        out.extend(lst)
+    mc[:] = out
+
 def _hdd_search(q, qi):
     has_ac = _has_acc(q)
     vq = _UD.normalize("NFC", q).strip() if has_ac else _vn_q(q)
@@ -1800,7 +1807,6 @@ def _hdd_search(q, qi):
         rt = _E.Element("subsonic-response", status="ok")
         _E.SubElement(rt, "searchResult3")
     sr = rt[0]
-    # Neu nguoi dung go CO DAU (VD: Thuy Dung), loc bo cac ket qua khong khop dau (VD: Thuy. Dung)
     if has_ac:
         kept = []
         for x in list(sr):
@@ -1809,7 +1815,6 @@ def _hdd_search(q, qi):
             if _match_query_text(q, full_t):
                 kept.append(x)
         sr[:] = kept
-
     seen = {x.attrib.get("id") for x in sr}
     for tg, at, txt in _H_IDX:
         if at.get("id") in seen:
@@ -1882,7 +1887,6 @@ def _ytm_search_artists_and_pls(q):
                     _CHAN_ID[_nfc(aname)] = bid
     except Exception:
         pass
-
     try:
         d_pl = _ytm_post("search", {"query": q, "params": "EgWKAQIoAWoKEAkQBRAKEAMQBA=="})
         for m in _find_k(d_pl, "musicResponsiveListItemRenderer"):
@@ -1967,9 +1971,9 @@ def _yt_web_search(q, sp_param=""):
             byl = pl.get("shortBylineText") or pl.get("longBylineText") or {}
             owner = _UD.normalize("NFC", "".join(x.get("text","") for x in byl.get("runs", []))).strip() or q
             cnt = str(pl.get("videoCount") or "20")
-            for ths in _find_k(pl, "thumbnails"):
-                if isinstance(ths, list) and ths and isinstance(ths[-1], dict) and ths[-1].get("url"):
-                    _PL_THUMB[pid] = _fix_url(ths[-1]["url"])
+            for u_cand in _find_k(pl, "url"):
+                if isinstance(u_cand, str) and ("ytimg.com" in u_cand or "ggpht.com" in u_cand or "googleusercontent.com" in u_cand):
+                    _PL_THUMB[pid] = _fix_url(u_cand)
             p_info = {"id": "pl_" + pid, "raw_id": pid, "title": ptit, "artist": owner, "songCount": cnt, "coverArt": "pl_" + pid}
             _PL_META[pid] = p_info
             out_pls.append(p_info)
@@ -2025,13 +2029,11 @@ def _yt_web_search(q, sp_param=""):
     return out_songs, out_chans, out_pls
 
 def _yt_playlist_tracks(raw_pid, fallback_art=""):
-    raw_pid = _RE.sub(r"^(VL|pl_|yt15_|yt11_|yt10_)+", "", str(raw_pid or "").strip())
+    raw_pid = _RE.sub(r"^(VL|pl_|yt\d*_)+", "", str(raw_pid or "").strip())
     if not raw_pid: return []
     if raw_pid in _PL_TRACKS_CACHE and _PL_TRACKS_CACHE[raw_pid]:
         return _PL_TRACKS_CACHE[raw_pid]
-
     out, seen_v = [], set()
-    # 1. Thu qua YTM next endpoint (Sieu nhanh 0.3s cho moi Playlist PL... va Uploads UU...)
     try:
         d_nx = _ytm_post("next", {"playlistId": raw_pid, "isAudioOnly": True, "enablePersistentPlaylistPanel": True})
         for p in _find_k(d_nx, "playlistPanelVideoRenderer"):
@@ -2047,8 +2049,6 @@ def _yt_playlist_tracks(raw_pid, fallback_art=""):
             if s: out.append(s)
     except Exception:
         pass
-
-    # 2. Thu qua WEB browse (VL + raw_pid) lay day du cac ban nhac dai 1-3 tieng
     if len(out) < 5:
         bid = raw_pid if raw_pid.startswith("VL") else ("VL" + raw_pid)
         try:
@@ -2078,7 +2078,6 @@ def _yt_playlist_tracks(raw_pid, fallback_art=""):
                 if s: out.append(s)
         except Exception:
             pass
-
     if out:
         _PL_TRACKS_CACHE[raw_pid] = out
         _save_meta()
@@ -2089,8 +2088,6 @@ def _yt_channel_videos(cid, cname):
     if not cid or not str(cid).startswith("UC"):
         return out
     cname = _UD.normalize("NFC", str(cname or "YouTube")).strip()
-
-    # 1. Quet truc tiep tab Videos va Home cua Kenh YouTube (browseId = UC...)
     for prm in ("EgZ2aWRlb3PyBgQKAjoA", ""):
         try:
             body = {
@@ -2122,8 +2119,6 @@ def _yt_channel_videos(cid, cname):
                 break
         except Exception:
             pass
-
-    # 2. Bo sung qua danh sach Uploads (UU...) cua Kenh
     if len(out) < 20:
         uu_tracks = _yt_playlist_tracks("UU" + str(cid)[2:], cname)
         for s in uu_tracks:
@@ -2132,7 +2127,6 @@ def _yt_channel_videos(cid, cname):
                 s["artist"] = cname
                 s["artistId"] = "ar_" + _H.md5(_nfc(cname).encode("utf-8")).hexdigest()[:10]
                 out.append(s)
-
     if out: _save_meta()
     return out
 
@@ -2141,7 +2135,6 @@ def _yt_search(q, st="searchResult3"):
     sr = _E.SubElement(rt, st)
     q = _UD.normalize("NFC", str(q or "")).strip()
     if not q: return rt
-
     if _RE.match(r"^[A-Za-z0-9_-]{11}$", q) and " " not in q:
         s = _ensure_vid_meta(q)
         if s: _E.SubElement(sr, "song", **s)
@@ -2158,7 +2151,6 @@ def _yt_search(q, st="searchResult3"):
     v_list, ch_list, w_pls = f_web.result() or ([], [], [])
     ytm_pls = f_ar_pl.result() or []
 
-    # Neu nguoi dung go CO DAU (VD: Thuy Dung), loai bo cac bai chi khop khong dau (VD: Thuy. Dung)
     if has_ac:
         s_list  = [s for s in s_list  if _match_query_text(q, f"{s.get('title','')} {s.get('artist','')} {s.get('album','')}") or _is_same_artist(q, s.get("artist",""), True)]
         yv_list = [s for s in yv_list if _match_query_text(q, f"{s.get('title','')} {s.get('artist','')}") or _is_same_artist(q, s.get("artist",""), True)]
@@ -2171,17 +2163,13 @@ def _yt_search(q, st="searchResult3"):
     other_v  = [v for v in all_vids if v not in ch_match]
     v_ordered = ch_match + other_v
 
-    i, j = 0, 0
-    while i < len(s_list) or j < len(v_ordered):
-        for _ in range(2):
-            if i < len(s_list):
-                if s_list[i]["id"] not in seen:
-                    seen.add(s_list[i]["id"]); merged.append(s_list[i])
-                i += 1
-        if j < len(v_ordered):
-            if v_ordered[j]["id"] not in seen:
-                seen.add(v_ordered[j]["id"]); merged.append(v_ordered[j])
-            j += 1
+    # Sap xep: YouTube Music chinh thuc (s_list) len truoc, sau do den YouTube thuong (v_ordered)
+    for s_it in s_list:
+        if s_it["id"] not in seen:
+            seen.add(s_it["id"]); merged.append(s_it)
+    for v_it in v_ordered:
+        if v_it["id"] not in seen:
+            seen.add(v_it["id"]); merged.append(v_it)
 
     ar_candidates, seen_ar = [], set()
     for arid, cname in ch_list:
@@ -2264,7 +2252,6 @@ def _collect_artist_data(artist_q):
 
     ch_uploads = _yt_channel_videos(cid, canon_name) if cid else []
 
-    # 1. Loc bai hat tren HDD (Chi lay dung ca si CO DAU khop 100%, khong bao gio lay Thuy. Dung khi mo Thuy Dung)
     hdd_list, seen = [], set()
     if _H_IDX:
         for tg, at, _ in _H_IDX:
@@ -2274,7 +2261,6 @@ def _collect_artist_data(artist_q):
                     if sid not in seen:
                         seen.add(sid); hdd_list.append(dict(at))
 
-    # 2. Uu tien cac bai hat chinh thuc tren YouTube Music (OH MON AMOUR, Lac Mat Mua Xuan...) len dau tien, sau do den Video cua Kenh
     yt_official_songs = []
     for s in ytm_songs:
         if s["id"] not in seen and _is_same_artist(art_clean, s.get("artist",""), True):
@@ -2289,7 +2275,6 @@ def _collect_artist_data(artist_q):
 
     out_tracks = hdd_list + yt_official_songs + yt_channel_vids
 
-    # 3. Loc Danh sach phat (Playlists) dung cua Artist/Kenh
     pls_filtered, seen_pl = [], set()
     for p_info in (web_g_p + web_p_p + ytm_pls):
         pid = p_info["id"]
@@ -2304,7 +2289,6 @@ def _collect_artist_data(artist_q):
     if out_tracks:
         _ART_CACHE_SONGS[ckey] = (out_tracks, now + 600)
         _ART_CACHE_PLS[ckey] = pls_filtered
-        # Nap truoc 4 playlist dau tien vao RAM trong nen de khi bam All Songs hoac Playlist mo tuc thi
         for p_inf in pls_filtered[:4]:
             _SUB_POOL.submit(_yt_playlist_tracks, p_inf["raw_id"], canon_name)
     return canon_name, out_tracks, pls_filtered
@@ -2329,13 +2313,9 @@ def _build_artist_page(rid):
     if rid in _STARRED.get("artists", {}):
         ar_attr["starred"] = "2026-11-15T00:00:00.000Z"
     ar = _E.SubElement(rt, "artist", **ar_attr)
-
-    # 1. Cac Bài hat / Video chinh chu cua Artist (Moi bai nam san trong _YL de All Songs tren Wavio tai tuc thi 0.01s)
     for s in top_vids:
         real_t = s.get("title") or s.get("album") or "YouTube Music"
         _E.SubElement(ar, "album", id="al_"+s["id"], parent=rid, isDir="true", name=real_t, title=real_t, album=real_t, artist=(aname or s["artist"]), artistId=rid, coverArt=s["id"], songCount="1", duration=s["duration"], created=s["created"], year="2026", genre=s.get("genre","YouTube Music"))
-
-    # 2. Danh sach phat (Playlists) cua Artist trong Discography
     for p_info in top_pls:
         p_name = f"\U0001f4d1 [DS Ph\u00e1t] {p_info['title']}"
         _E.SubElement(ar, "album", id=p_info["id"], parent=rid, isDir="true", name=p_name, title=p_name, album=p_name, artist=(aname or p_info["artist"]), artistId=rid, coverArt=p_info["id"], songCount=str(p_info.get("songCount","20")), duration="7200", created="2026-01-01T00:00:00.000Z", year="2026", genre="Playlist")
@@ -2356,8 +2336,7 @@ def _build_playlist_or_all_album(aid, is_dir=False):
             sc = dict(s); sc["track"] = str(idx); sc["artistId"] = rid
             _E.SubElement(al, ch_tg, **sc)
         return rt
-
-    raw_pid = _RE.sub(r"^(yt15_|yt11_|yt10_|pl_)+", "", aid)
+    raw_pid = _RE.sub(r"^(yt\d*_|pl_)+", "", aid)
     p_info = _PL_META.get(raw_pid, {})
     ptit = p_info.get("title") or "Danh S\u00e1ch Ph\u00e1t YouTube"
     part = p_info.get("artist") or "YouTube Music"
@@ -2397,22 +2376,36 @@ def _ens_fast(vid):
     return j
 
 def _to_car_jpg(d, is_yt_16_9=False):
+    if not d or len(d) < 400:
+        return None
+    tid = f"{_TH.get_ident()}_{_RND.randint(1000,9999)}"
+    fin = f"/tmp/art_in_{tid}.jpg"
+    fout = f"/tmp/art_out_{tid}.jpg"
     try:
-        vf = "scale=640:640:force_original_aspect_ratio=increase,crop=400:400" if is_yt_16_9 else "scale=400:400:force_original_aspect_ratio=increase,crop=400:400"
-        p = _SP.run(["ffmpeg","-loglevel","error","-i","pipe:0","-frames:v","1","-vf",vf,"-q:v","3","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=5)
-        if p.returncode == 0 and len(p.stdout) > 400:
-            return p.stdout
+        open(fin, "wb").write(d)
+        vf = "crop=270:270:105:45,scale=480:480" if is_yt_16_9 else "scale=480:480:force_original_aspect_ratio=increase,crop=480:480"
+        p = _SP.run(["ffmpeg","-y","-loglevel","error","-i",fin,"-frames:v","1","-vf",vf,"-strict","-2","-q:v","2",fout], stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=5)
+        if p.returncode == 0 and _OS.path.exists(fout) and _OS.path.getsize(fout) > 400:
+            return open(fout, "rb").read()
     except Exception:
         pass
-    return d if (d and d.startswith(b"\xff\xd8")) else None
+    finally:
+        for fp in (fin, fout):
+            try:
+                if _OS.path.exists(fp): _OS.remove(fp)
+            except Exception:
+                pass
+    return d if d.startswith(b"\xff\xd8") else None
 
 def _get_art_bytes(cid):
     if not cid: return None
     s = str(cid or "").strip()
-    is_hdd = s.startswith(("hdd_","hdd6_","hdd7_","hdd9_","hdd10_","hdd11_","hdd15_"))
-    clean_s = _RE.sub(r"^(hdd15_|hdd11_|hdd10_|hdd9_|hdd7_|hdd6_|hdd_|yt15_|yt11_|yt10_|yt9_|yt7_|yt6_|yt5_)+", "", s)
+    is_hdd = bool(_RE.match(r"^hdd\d*_", s))
+    clean_s = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", s)
+    if clean_s.startswith("al_all_"):
+        clean_s = clean_s[7:]
 
-    if clean_s.startswith("ar_") and not is_hdd:
+    if _RE.match(r"^ar_[0-9a-f]{10}$", clean_s) and not is_hdd:
         ckey = "ar_" + clean_s
         if ckey in _ART_RAM: return _ART_RAM[ckey]
         cf = _OS.path.join(_ART_DIR, _H.md5(ckey.encode()).hexdigest() + ".jpg")
@@ -2431,12 +2424,12 @@ def _get_art_bytes(cid):
                 with _U.urlopen(_U.Request(_fix_url(tu), headers={"User-Agent":"Mozilla/5.0"}), timeout=5, context=_CTX) as r:
                     d = r.read()
                     if r.status == 200 and len(d) > 400:
-                        jpg = _to_car_jpg(d, False) or d
+                        jpg = d if d.startswith(b"\xff\xd8") else (_to_car_jpg(d, False) or d)
                         open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
             except Exception:
                 pass
 
-    if clean_s.startswith("pl_") and not is_hdd:
+    if clean_s.startswith("pl_") and len(clean_s) > 12 and not is_hdd:
         raw_pid = clean_s[3:]
         ckey = "pl_" + raw_pid
         if ckey in _ART_RAM: return _ART_RAM[ckey]
@@ -2450,13 +2443,16 @@ def _get_art_bytes(cid):
                 with _U.urlopen(_U.Request(_fix_url(tu), headers={"User-Agent":"Mozilla/5.0"}), timeout=5, context=_CTX) as r:
                     d = r.read()
                     if r.status == 200 and len(d) > 400:
-                        jpg = _to_car_jpg(d, False) or d
+                        jpg = _to_car_jpg(d, is_yt_16_9=("hqdefault" in tu)) or d
                         open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
             except Exception:
                 pass
+        tr_list = _PL_TRACKS_CACHE.get(raw_pid) or _yt_playlist_tracks(raw_pid)
+        if tr_list and tr_list[0].get("id"):
+            clean_s = tr_list[0]["id"]
 
-    raw_id = clean_s[3:] if clean_s.startswith(("al_","ar_","pl_")) else clean_s
-    kind = "hdd" if is_hdd else ("yt" if (s.startswith(("yt5_","yt6_","yt7_","yt9_","yt10_","yt11_","yt15_")) or _RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) else "hdd")
+    raw_id = clean_s[3:] if (clean_s.startswith("al_") and len(clean_s) == 14) else clean_s
+    kind = "hdd" if is_hdd else ("yt" if (s.startswith("yt") or _RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) else "hdd")
     k_id = (_ART_MAP.get(raw_id, "") or raw_id) if kind == "hdd" else raw_id
     ckey = f"{kind}_{k_id}"
     if ckey in _ART_RAM: return _ART_RAM[ckey]
@@ -2474,13 +2470,12 @@ def _get_art_bytes(cid):
         with _ART_SEM:
             for cand in cands:
                 try:
-                    cq = [x for x in _hdd_q([("id", cand), ("size", "360")]) if x[0] != "f"]
+                    cq = [x for x in _hdd_q([("id", cand), ("size", "500")]) if x[0] != "f"]
                     with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent":"Resonus"}), timeout=6, context=_CTX) as r:
                         d = r.read()
                         if r.status == 200 and len(d) > 400 and not d.lstrip().startswith(b"<"):
-                            jpg = _to_car_jpg(d, False) or (d if d.startswith(b"\xff\xd8") else None)
-                            if jpg:
-                                open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+                            jpg = d if d.startswith(b"\xff\xd8") else (_to_car_jpg(d, False) or d)
+                            open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
                 except Exception:
                     pass
         qt = _HDD_META.get(raw_id) or _HDD_META.get(k_id)
@@ -2493,21 +2488,20 @@ def _get_art_bytes(cid):
         vid = m.group(1)
         if vid in _YTM_THUMB:
             try:
-                tu = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w360-h360-p-l85-rj", _YTM_THUMB[vid])
+                tu = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l95-rj", _YTM_THUMB[vid])
                 with _U.urlopen(_U.Request(tu, headers={"User-Agent":"Mozilla/5.0"}), timeout=4, context=_CTX) as r:
                     d = r.read()
                     if r.status == 200 and len(d) > 400:
-                        jpg = _to_car_jpg(d, False) or (d if d.startswith(b"\xff\xd8") else None)
-                        if jpg:
-                            open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+                        jpg = d if d.startswith(b"\xff\xd8") else (_to_car_jpg(d, False) or d)
+                        open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
             except Exception:
                 pass
-        for rs in ("hqdefault.jpg","mqdefault.jpg"):
+        for rs in ("hqdefault.jpg", "mqdefault.jpg"):
             try:
                 with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{vid}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=4, context=_CTX) as r:
                     d = r.read()
                     if r.status == 200 and len(d) > 400:
-                        jpg = _to_car_jpg(d, is_yt_16_9=(rs == "hqdefault.jpg"))
+                        jpg = _to_car_jpg(d, is_yt_16_9=(rs == "hqdefault.jpg")) or d
                         if jpg:
                             open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
             except Exception:
@@ -2526,11 +2520,11 @@ def _fmt(rt, js, cb=None):
         a = x.attrib
         ca = a.get("coverArt")
         if ca:
-            raw_ca = _RE.sub(r"^(hdd15_|hdd11_|hdd10_|hdd9_|hdd7_|hdd6_|hdd_|yt15_|yt11_|yt10_|yt9_|yt7_|yt6_|yt5_)+", "", str(ca))
-            if str(ca).startswith(("hdd_","hdd6_","hdd7_","hdd9_","hdd10_","hdd11_","hdd15_")) or str(a.get("id","")).startswith("hdd_"):
-                a["coverArt"] = "hdd15_" + raw_ca
+            raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", str(ca))
+            if str(ca).startswith("hdd") or str(a.get("id","")).startswith("hdd_"):
+                a["coverArt"] = "hdd20_" + raw_ca
             else:
-                a["coverArt"] = "yt15_" + raw_ca
+                a["coverArt"] = "yt20_" + raw_ca
             warm.append(a["coverArt"])
         if x.tag in ("song","child","entry") and a.get("isDir") != "true" and not str(a.get("id","")).startswith("hdd_"):
             a.setdefault("bitRate", "256")
@@ -2591,12 +2585,11 @@ async def _k9_mw(req, call_next):
             base_u = str(req.base_url).rstrip("/")
             if "nhacuakhoa.online" in base_u and base_u.startswith("http://"):
                 base_u = "https://" + base_u[7:]
-            img_u = f"{base_u}/rest/getCoverArt.view?id=yt15_{rid}&{auth_p}"
+            img_u = f"{base_u}/rest/getCoverArt.view?id=yt20_{rid}&{auth_p}"
             for itg in ("smallImageUrl", "mediumImageUrl", "largeImageUrl"):
                 el = _E.SubElement(ai, itg); el.text = img_u
         return _fmt(rt, js, cb)
 
-    # Xu ly TopSongs, Artist Page, Playlist & Album tren _REQ_POOL (Khong bao gio deadlock voi _SUB_POOL)
     if "gettopsongs" in pl:
         art_q = qd.get("artist") or qd.get("query") or qd.get("id") or ""
         cnt = int(qd.get("count") or 60)
@@ -2612,7 +2605,7 @@ async def _k9_mw(req, call_next):
         rt = await lp.run_in_executor(_REQ_POOL, _build_playlist_or_all_album, rid, "directory" in pl)
         return _fmt(rt, js, cb)
 
-    # Tim kiem phan biet chinh xac Co Dau vs Khong Dau
+    # Tim kiem voi thu tu uu tien: 1. HDD -> 2. YouTube Music -> 3. YouTube
     if "search" in pl:
         global _S_SEQ, _LAST_Q
         q_str = _UD.normalize("NFC", (qd.get("query") or qd.get("any") or qd.get("q") or "").strip('" '))
@@ -2630,7 +2623,8 @@ async def _k9_mw(req, call_next):
                 f1 = lp.run_in_executor(_REQ_POOL, _yt_search, q_str, "searchResult3")
                 f2 = lp.run_in_executor(_REQ_POOL, _hdd_search, q_str, qi)
                 mrt, hrt = await f1, await f2
-                if hrt is not None and len(hrt) > 0: _ilv(mrt[0], hrt[0])
+                if hrt is not None and len(hrt) > 0:
+                    _hdd_first(mrt[0], hrt[0])
                 _SCACHE[qn] = (_E.tostring(mrt), now + 300)
             mrt = _E.fromstring(_SCACHE[qn][0]); mrt[0].tag = st
             return _fmt(mrt, js, cb)
