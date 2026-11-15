@@ -1647,14 +1647,227 @@ _POOL.submit(_init_hdd)
 _POOL.submit(_yt_search, "Thùy Dung Lệ Quyên Bằng Kiều Salvatore Adamo")
 
 
-# --- K9: V1.2.1 50/50 RANDOM MIX & GUARANTEED CAR WIDGET THUMBNAIL ---
+
+# --- K9: V1.2.2 YOUTUBE CHANNELS (DIA THAN NHAC VANG), FAVORITES FIX & CAR THUMBNAIL ---
 import random as _RND
 import concurrent.futures as _CF
 
 _ART_POOL = _CF.ThreadPoolExecutor(max_workers=12)
 _ART_DIR = "/data/art_cache_v10" if _OS.path.isdir("/data") else "/tmp/art_cache_v10"
+_STAR_F  = "/data/starred_v10.json" if _OS.path.isdir("/data") else "/tmp/starred_v10.json"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_RAM.clear()
+
+try:
+    _STARRED = _J.load(open(_STAR_F))
+except Exception:
+    _STARRED = {"artists": {}, "albums": {}, "songs": {}}
+
+def _save_star():
+    try:
+        _J.dump(_STARRED, open(_STAR_F, "w"))
+    except Exception:
+        pass
+
+def _yt_web_search(q):
+    out_songs, out_chans = [], []
+    try:
+        body = {
+            "context": {"client": {"clientName": "WEB", "clientVersion": "2.20260101.01.00", "hl": "vi", "gl": "VN"}},
+            "query": q
+        }
+        req = _U.Request(
+            "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
+            data=_J.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            method="POST"
+        )
+        with _U.urlopen(req, timeout=6, context=_CTX) as r:
+            data = _J.loads(r.read().decode("utf-8", "ignore"))
+
+        for ch in _find_k(data, "channelRenderer"):
+            cname = (ch.get("title") or {}).get("simpleText") or "".join(x.get("text","") for x in (ch.get("title") or {}).get("runs", [])).strip()
+            if not cname: continue
+            arid = "ar_" + _H.md5(cname.lower().encode()).hexdigest()[:10]
+            _ARTIST_NAMES[arid] = cname
+            out_chans.append((arid, cname))
+
+        for v in _find_k(data, "videoRenderer"):
+            vid = str(v.get("videoId") or "").strip()
+            if not _RE.match(r"^[A-Za-z0-9_-]{11}$", vid): continue
+            tit = "".join(x.get("text","") for x in (v.get("title") or {}).get("runs", [])).strip()
+            if not tit: continue
+            byl_obj = v.get("ownerText") or v.get("longBylineText") or v.get("shortBylineText") or {}
+            art = "".join(x.get("text","") for x in byl_obj.get("runs", [])).strip() or "YouTube"
+            l_obj = v.get("lengthText") or {}
+            d_str = l_obj.get("simpleText") or "".join(x.get("text","") for x in l_obj.get("runs", [])).strip()
+            if not d_str: continue
+            s = _make_song(vid, tit, art, f"{art} - Tuy\u1ec3n Ch\u1ecdn", _dur_sec(d_str), is_vid=True)
+            if s: out_songs.append(s)
+    except Exception:
+        pass
+    if out_songs or out_chans:
+        _save_meta()
+    return out_songs, out_chans
+
+def _yt_search(q, st="searchResult3"):
+    rt = _E.Element("subsonic-response", status="ok")
+    sr = _E.SubElement(rt, st)
+    q = str(q or "").strip()
+    if not q: return rt
+
+    if _RE.match(r"^[A-Za-z0-9_-]{11}$", q) and " " not in q:
+        s = _ensure_vid_meta(q)
+        if s: _E.SubElement(sr, "song", **s)
+        return rt
+
+    f_songs = _POOL.submit(_ytm_search_items, q, "EgWKAQIIAWoKEAkQBRAKEAMQBA==", False)
+    f_web   = _POOL.submit(_yt_web_search, q)
+    s_list = f_songs.result() or []
+    v_list, ch_list = f_web.result() or ([], [])
+
+    merged, seen = [], set()
+    q_norm = _no_acc(q)
+    # Neu tu khoa tim kiem trung voi ten Kenh YouTube (nhu Dia Than Nhac Vang), uu tien dua video cua kenh do len dau
+    ch_match = [v for v in v_list if q_norm in _no_acc(v.get("artist",""))]
+    other_v  = [v for v in v_list if v not in ch_match]
+    v_ordered = ch_match + other_v
+
+    i, j = 0, 0
+    while i < len(s_list) or j < len(v_ordered):
+        if ch_match and j < len(ch_match):
+            if v_ordered[j]["id"] not in seen:
+                seen.add(v_ordered[j]["id"]); merged.append(v_ordered[j])
+            j += 1
+        for _ in range(2):
+            if i < len(s_list):
+                if s_list[i]["id"] not in seen:
+                    seen.add(s_list[i]["id"]); merged.append(s_list[i])
+                i += 1
+        if j < len(v_ordered):
+            if v_ordered[j]["id"] not in seen:
+                seen.add(v_ordered[j]["id"]); merged.append(v_ordered[j])
+            j += 1
+
+    ar_candidates = []
+    seen_ar = set()
+    for arid, cname in ch_list:
+        if arid not in seen_ar:
+            seen_ar.add(arid)
+            cov = next((x["id"] for x in merged if x.get("artistId") == arid), (merged[0]["id"] if merged else ""))
+            ar_candidates.append((0 if q_norm in _no_acc(cname) else 1, arid, cname, cov))
+    for s in merged:
+        arid = s["artistId"]
+        cname = s["artist"]
+        if arid not in seen_ar:
+            seen_ar.add(arid)
+            ar_candidates.append((0 if q_norm in _no_acc(cname) else 2, arid, cname, s["id"]))
+
+    ar_candidates.sort(key=lambda x: x[0])
+    for _, arid, cname, cov in ar_candidates[:25]:
+        at_dict = {"id": arid, "name": cname, "coverArt": cov, "albumCount": "20"}
+        if arid in _STARRED.get("artists", {}):
+            at_dict["starred"] = "2026-11-15T00:00:00.000Z"
+        _E.SubElement(sr, "artist", **at_dict)
+
+    for s in merged:
+        arid = s["artistId"]
+        _E.SubElement(sr, "album", id="al_"+s["id"], parent=arid, isDir="true", name=s["album"], title=s["album"], album=s["album"], artist=s["artist"], artistId=arid, coverArt=s["id"], songCount="1", duration=s["duration"], created=s["created"], year=s["year"], genre=s["genre"])
+        _E.SubElement(sr, "song", **s)
+    return rt
+
+def _build_top_songs(artist_q, count=30):
+    raw_name = _resolve_artist_name(artist_q)
+    art_clean = _clean_seed(raw_name) or "Thuy Dung"
+    anorm = _no_acc(art_clean)
+    awords = [w for w in anorm.split() if len(w) > 1]
+
+    f_ytm = _POOL.submit(_ytm_search_items, art_clean, "EgWKAQIIAWoKEAkQBRAKEAMQBA==", False)
+    f_web = _POOL.submit(_yt_web_search, art_clean)
+    ytm_all = f_ytm.result() or []
+    web_songs, _ = f_web.result() or ([], [])
+
+    hdd_list, seen = [], set()
+    if awords and _H_IDX:
+        for tg, at, txt in _H_IDX:
+            if tg in ("song", "child", "entry") and at.get("isDir") != "true":
+                at_art = _no_acc(at.get("artist",""))
+                if all(w in at_art or w in txt for w in awords):
+                    sid = at.get("id","")
+                    if sid not in seen:
+                        seen.add(sid); hdd_list.append(dict(at))
+
+    exact_art, other_yt = [], []
+    for s in (web_songs + ytm_all):
+        if s["id"] in seen: continue
+        seen.add(s["id"])
+        if anorm in _no_acc(s.get("artist","")) or all(w in _no_acc(s.get("artist","") + " " + s.get("title","")) for w in awords):
+            exact_art.append(s)
+        else:
+            other_yt.append(s)
+
+    yt_final = exact_art + other_yt
+    rt = _E.Element("subsonic-response", status="ok")
+    mc = _E.SubElement(rt, "topSongs")
+    out = []
+    for i in range(max(len(yt_final), len(hdd_list))):
+        if i < len(yt_final): out.append(yt_final[i])
+        if i < len(hdd_list): out.append(hdd_list[i])
+    for s in out[:count]:
+        _E.SubElement(mc, "song", **s)
+    return rt
+
+def _build_artist_page(rid):
+    aname = _resolve_artist_name(rid)
+    q_name = _clean_seed(aname) or "Thuy Dung"
+    anorm = _no_acc(q_name)
+
+    f_ytm = _POOL.submit(_ytm_search_items, q_name, "EgWKAQIIAWoKEAkQBRAKEAMQBA==", False)
+    f_web = _POOL.submit(_yt_web_search, q_name)
+    ytm_s = f_ytm.result() or []
+    web_s, _ = f_web.result() or ([], [])
+
+    als = [s for s in _YL.values() if s.get("artistId") == rid]
+    seen_ids = {s["id"] for s in als}
+    for s in (web_s + ytm_s):
+        if s["id"] not in seen_ids and (anorm in _no_acc(s.get("artist","")) or anorm in _no_acc(s.get("title","")) or len(als) < 12):
+            als.append(s); seen_ids.add(s["id"])
+    if als and (not aname or aname == "YouTube Music"):
+        aname = als[0].get("artist") or q_name
+        _ARTIST_NAMES[rid] = aname
+    rt = _E.Element("subsonic-response", status="ok")
+    ar_attr = {"id": rid, "name": (aname or q_name), "coverArt": (als[0]["id"] if als else ""), "albumCount": str(len(als))}
+    if rid in _STARRED.get("artists", {}):
+        ar_attr["starred"] = "2026-11-15T00:00:00.000Z"
+    ar = _E.SubElement(rt, "artist", **ar_attr)
+    for s in als:
+        _E.SubElement(ar, "album", id="al_"+s["id"], parent=rid, isDir="true", name=s["album"], title=s["album"], album=s["album"], artist=s["artist"], artistId=rid, coverArt=s["id"], songCount="1", duration=s["duration"], created=s["created"], year="2026", genre=s.get("genre","YouTube Music"))
+    return rt
+
+def _ens_fast(vid):
+    ap = _OS.path.join(_AUD_DIR, f"{vid}.aac")
+    if _OS.path.exists(ap) and _OS.path.getsize(ap) > 32768:
+        if vid in _YL: _YL[vid]["size"] = str(_OS.path.getsize(ap))
+        return {"p": ap, "d": True}
+    if vid in _FAST_JOBS and not _FAST_JOBS[vid]["d"]:
+        return _FAST_JOBS[vid]
+    j = {"p": ap, "d": False}
+    _FAST_JOBS[vid] = j
+    def _run():
+        try:
+            c1 = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "--concurrent-fragments", "8", "-f", "140/251/bestaudio/best", "-o", "-", f"https://www.youtube.com/watch?v={vid}"]
+            c2 = ["ffmpeg", "-y", "-loglevel", "error", "-threads", "4", "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100", "-c:a", "aac", "-b:a", "256k", "-f", "adts", ap]
+            p1 = _SP.Popen(c1, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
+            p2 = _SP.Popen(c2, stdin=p1.stdout, stdout=_SP.DEVNULL, stderr=_SP.DEVNULL)
+            p1.stdout.close(); p2.communicate(timeout=3600)
+            if _OS.path.exists(ap) and _OS.path.getsize(ap) > 32768 and vid in _YL:
+                _YL[vid]["size"] = str(_OS.path.getsize(ap))
+        except Exception:
+            pass
+        finally:
+            j["d"] = True
+    _TH.Thread(target=_run, daemon=True).start()
+    return j
 
 def _to_car_jpg(d, is_yt_16_9=False):
     try:
@@ -1795,7 +2008,6 @@ async def _k9_mw(req, call_next):
     cb = qd.get("callback") if fv == "jsonp" else None
     lp = _A.get_running_loop()
 
-    # 1. Luong rieng toc do cao cho /getCoverArt (khong bi nghen boi _POOL)
     if "/getcoverart" in pl:
         cid = str(qd.get("id") or "").strip()
         d = await lp.run_in_executor(_ART_POOL, _get_art_bytes, cid) if cid else None
@@ -1805,7 +2017,51 @@ async def _k9_mw(req, call_next):
 
     if not _check_auth(qd): return await call_next(req)
 
-    # 2. Khi bat dau /stream, nap truoc anh bia vao RAM truoc khi phat nhac de Widget xe BYD luon nhan duoc anh
+    # 1. Xu ly tha tim / bo tim (star / unstar) cho ca Nghe si, Album va Bai hat (Khong bao giờ bao loi do tren Wavio)
+    if "/star" in pl or "/unstar" in pl:
+        is_un = "/unstar" in pl
+        hdd_qi = []
+        for k, v in qi:
+            if k in ("id", "albumId", "artistId") and v:
+                sv = str(v).strip()
+                if sv.startswith("hdd_"):
+                    hdd_qi.append((k, sv))
+                elif k == "artistId" or sv.startswith("ar_"):
+                    if is_un: _STARRED.get("artists", {}).pop(sv, None)
+                    else: _STARRED.setdefault("artists", {})[sv] = _resolve_artist_name(sv)
+                elif k == "albumId" or sv.startswith("al_"):
+                    vid = sv[3:] if sv.startswith("al_") else sv
+                    if is_un: _STARRED.get("albums", {}).pop(vid, None)
+                    else: _STARRED.setdefault("albums", {})[vid] = _YL.get(vid, {})
+                else:
+                    if is_un: _STARRED.get("songs", {}).pop(sv, None)
+                    else: _STARRED.setdefault("songs", {})[sv] = _YL.get(sv, {})
+        _save_star()
+        if hdd_qi:
+            await lp.run_in_executor(_POOL, _hdd_xml, p, qi)
+        return _fmt(_E.Element("subsonic-response", status="ok"), js, cb)
+
+    # 2. Xu ly danh sach Favorites (getStarred / getStarred2) ket hop HDD + YouTube
+    if "getstarred" in pl:
+        hrt = await lp.run_in_executor(_POOL, _hdd_xml, p, qi)
+        rt = _E.Element("subsonic-response", status="ok")
+        tg = "starred2" if "2" in pl else "starred"
+        sc = _E.SubElement(rt, tg)
+        if hrt is not None and len(hrt) > 0:
+            for x in hrt[0]: sc.append(x)
+        for arid, aname in (_STARRED.get("artists") or {}).items():
+            _E.SubElement(sc, "artist", id=arid, name=(aname or "YouTube Music"), albumCount="15", starred="2026-11-15T00:00:00.000Z")
+        for vid, s in (_STARRED.get("albums") or {}).items():
+            if isinstance(s, dict) and s.get("id"):
+                _E.SubElement(sc, "album", id="al_"+s["id"], parent=s.get("artistId",""), isDir="true", name=s.get("album",""), title=s.get("album",""), album=s.get("album",""), artist=s.get("artist",""), artistId=s.get("artistId",""), coverArt=s["id"], songCount="1", duration=s.get("duration","240"), created="2026-01-01T00:00:00.000Z", year="2026", starred="2026-11-15T00:00:00.000Z")
+        for vid, s in (_STARRED.get("songs") or {}).items():
+            if not (isinstance(s, dict) and s.get("id")) and vid in _YL:
+                s = _YL[vid]
+            if isinstance(s, dict) and s.get("id"):
+                _E.SubElement(sc, "song", **{**s, "starred": "2026-11-15T00:00:00.000Z"})
+        return _fmt(rt, js, cb)
+
+    # 3. Khi bat dau /stream, nap truoc anh bia vao RAM va ho tro phat tuc thi cac ban lien khuc dai 1-3 tieng
     if "/stream" in pl or "/download" in pl:
         sid = str(qd.get("id") or "").strip()
         if sid:
@@ -1813,9 +2069,28 @@ async def _k9_mw(req, call_next):
                 await _A.wait_for(lp.run_in_executor(_ART_POOL, _get_art_bytes, sid), timeout=1.5)
             except Exception:
                 pass
+        if not sid.startswith("hdd_"):
+            m = _RE.search(r"([A-Za-z0-9_-]{11})$", sid)
+            if m:
+                vid = m.group(1)
+                dur_v = int((_YL.get(vid) or {}).get("duration") or 240)
+                if dur_v > 600:
+                    j = _ens_fast(vid)
+                    for _ in range(60):
+                        if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 32768) or j["d"]: break
+                        await _A.sleep(0.1)
+                    if _OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) > 0:
+                        async def _long_g():
+                            with open(j["p"], "rb") as f:
+                                while True:
+                                    c = f.read(32768)
+                                    if c: yield c
+                                    elif j["d"]: break
+                                    else: await _A.sleep(0.05)
+                        return _SR(_long_g(), status_code=200, media_type="audio/aac", headers=_CORS)
         return await call_next(req)
 
-    # 3. Tron 50-50 HDD va YouTube Music cho getRandomSongs
+    # 4. Tron 50-50 HDD va YouTube Music cho getRandomSongs
     if "getrandomsongs" in pl:
         cnt = int(qd.get("size") or qd.get("count") or 30)
         h_all = await lp.run_in_executor(_POOL, _hdd_songs)
@@ -1834,7 +2109,7 @@ async def _k9_mw(req, call_next):
             _E.SubElement(mc, "song", **s)
         return _fmt(rt, js, cb)
 
-    # 4. Tron 50-50 HDD va YouTube Music tren trang Home & giu nguyen All Albums trong Library
+    # 5. Tron 50-50 HDD va YouTube Music tren trang Home & giu nguyen All Albums trong Library
     if "getalbumlist" in pl:
         lt = qd.get("type","").lower()
         off = int(qd.get("offset") or 0)
@@ -1867,3 +2142,5 @@ async def _k9_mw(req, call_next):
         return _fmt(mrt, js, cb)
 
     return await call_next(req)
+
+_SCACHE.clear()
