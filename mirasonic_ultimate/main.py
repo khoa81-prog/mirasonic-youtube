@@ -1646,45 +1646,135 @@ _SCACHE.clear()
 _POOL.submit(_init_hdd)
 _POOL.submit(_yt_search, "Thùy Dung Lệ Quyên Bằng Kiều Salvatore Adamo")
 
-# --- K9: V1.2.0 HDD TAB & 50/50 HOME MIX ---
+
+# --- K9: V1.2.1 50/50 RANDOM MIX & GUARANTEED CAR WIDGET THUMBNAIL ---
 import random as _RND
+import concurrent.futures as _CF
+
+_ART_POOL = _CF.ThreadPoolExecutor(max_workers=12)
+_ART_DIR = "/data/art_cache_v10" if _OS.path.isdir("/data") else "/tmp/art_cache_v10"
+_OS.makedirs(_ART_DIR, exist_ok=True)
+_ART_RAM.clear()
+
+def _to_car_jpg(d, is_yt_16_9=False):
+    try:
+        vf = "crop='min(iw,ih*0.74)':'min(iw,ih*0.74)',scale=360:360:flags=lanczos" if is_yt_16_9 else "scale=360:360:force_original_aspect_ratio=increase:flags=lanczos,crop=360:360"
+        p = _SP.run(["ffmpeg","-loglevel","error","-threads","1","-i","pipe:0","-frames:v","1","-vf",vf,"-pix_fmt","yuvj420p","-q:v","4","-f","image2pipe","-vcodec","mjpeg","pipe:1"], input=d, stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=5)
+        if p.returncode == 0 and len(p.stdout) > 400:
+            return p.stdout
+    except Exception:
+        pass
+    return None
+
+def _canon_art_key(cid):
+    s = str(cid or "").strip()
+    is_hdd = s.startswith(("hdd_","hdd6_","hdd7_","hdd9_","hdd10_"))
+    raw = _RE.sub(r"^(hdd10_|hdd9_|hdd7_|hdd6_|hdd_|yt10_|yt9_|yt7_|yt6_|yt5_|al_|ar_)+", "", s)
+    is_yt = s.startswith(("yt5_","yt6_","yt7_","yt9_","yt10_")) or (bool(_RE.match(r"^[A-Za-z0-9_-]{11}$", raw)) and not is_hdd and (raw in _YL or s.startswith(("al_","ar_"))))
+    if is_yt and not is_hdd:
+        m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw)
+        return ("yt", m.group(1) if m else raw, raw)
+    alid = _ART_MAP.get(raw, "")
+    return ("hdd", alid if alid else raw, raw)
+
+def _get_art_bytes(cid):
+    if not cid: return None
+    kind, k_id, raw_id = _canon_art_key(cid)
+    ckey = f"{kind}_{k_id}"
+    if ckey in _ART_RAM:
+        return _ART_RAM[ckey]
+    cf = _OS.path.join(_ART_DIR, _H.md5(ckey.encode()).hexdigest() + ".jpg")
+    if _OS.path.exists(cf) and _OS.path.getsize(cf) > 400:
+        d = open(cf, "rb").read()
+        if len(_ART_RAM) < 800: _ART_RAM[ckey] = d
+        return d
+
+    if kind == "hdd" and _HDD:
+        alid = _ART_MAP.get(raw_id, "")
+        cands = []
+        for x in ([raw_id, "mf-"+raw_id, "al-"+alid, alid, "al-"+raw_id, raw_id[3:] if raw_id.startswith(("al-","mf-")) else ""] if alid else [raw_id, "mf-"+raw_id, "al-"+raw_id, raw_id[3:] if raw_id.startswith(("al-","mf-")) else ""]):
+            if x and x not in cands: cands.append(x)
+        with _ART_SEM:
+            for cand in cands:
+                try:
+                    cq = [x for x in _hdd_q([("id", cand), ("size", "360")]) if x[0] != "f"]
+                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent":"Resonus"}), timeout=6, context=_CTX) as r:
+                        d = r.read()
+                        if r.status == 200 and len(d) > 400 and not d.lstrip().startswith(b"<"):
+                            jpg = _to_car_jpg(d, False) or (d if d.startswith(b"\xff\xd8") else None)
+                            if jpg:
+                                open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+                except Exception:
+                    pass
+        qt = _HDD_META.get(raw_id) or _HDD_META.get(k_id)
+        if qt:
+            s_items = _ytm_search_items(qt, "EgWKAQIIAWoKEAkQBRAKEAMQBA==", False)
+            if s_items: raw_id = s_items[0]["id"]
+
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
+    if m:
+        vid = m.group(1)
+        if vid in _YTM_THUMB:
+            try:
+                tu = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w360-h360-p-l85-rj", _YTM_THUMB[vid])
+                with _U.urlopen(_U.Request(tu, headers={"User-Agent":"Mozilla/5.0"}), timeout=4, context=_CTX) as r:
+                    d = r.read()
+                    if r.status == 200 and len(d) > 400:
+                        jpg = _to_car_jpg(d, False) or (d if d.startswith(b"\xff\xd8") else None)
+                        if jpg:
+                            open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+            except Exception:
+                pass
+        for rs in ("mqdefault.jpg","hqdefault.jpg"):
+            try:
+                with _U.urlopen(_U.Request(f"https://i.ytimg.com/vi/{vid}/{rs}", headers={"User-Agent":"Mozilla/5.0"}), timeout=4, context=_CTX) as r:
+                    d = r.read()
+                    if r.status == 200 and len(d) > 400:
+                        jpg = _to_car_jpg(d, is_yt_16_9=(rs == "hqdefault.jpg"))
+                        if jpg:
+                            open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+            except Exception:
+                pass
+    return None
+
+def _prewarm_list(ids):
+    for cid in ids[:24]:
+        try: _get_art_bytes(cid)
+        except Exception: pass
+
+def _fmt(rt, js, cb=None):
+    _cln(rt)
+    warm = []
+    for x in rt.iter():
+        a = x.attrib
+        ca = a.get("coverArt")
+        if ca:
+            raw_ca = _RE.sub(r"^(hdd10_|hdd9_|hdd7_|hdd6_|hdd_|yt10_|yt9_|yt7_|yt6_|yt5_)+", "", str(ca))
+            if str(ca).startswith(("hdd_","hdd6_","hdd7_","hdd9_","hdd10_")) or str(a.get("id","")).startswith("hdd_"):
+                a["coverArt"] = "hdd10_" + raw_ca
+            else:
+                a["coverArt"] = "yt10_" + raw_ca
+            warm.append(a["coverArt"])
+        if x.tag in ("song","child","entry") and a.get("isDir") != "true" and not str(a.get("id","")).startswith("hdd_"):
+            a.setdefault("bitRate", "256")
+            a.setdefault("suffix", "aac")
+            a.setdefault("contentType", "audio/aac")
+            a.setdefault("samplingRate", "44100")
+            a.setdefault("bitDepth", "16")
+            a.setdefault("channelCount", "2")
+            a.setdefault("type", "music")
+    if warm:
+        _ART_POOL.submit(_prewarm_list, list(dict.fromkeys(warm)))
+    rt.attrib.update({"status":rt.attrib.get("status","ok"),"version":"1.16.1","type":"subsonic","serverVersion":"1.16.1"})
+    if js:
+        b = _J.dumps({"subsonic-response": _x2d(rt, 0)})
+        return _R(content=f"{cb}({b});" if cb else b, media_type="application/json; charset=utf-8", headers=_CORS)
+    rt.set("xmlns", "http://subsonic.org/restapi")
+    return _R(content=b'<?xml version="1.0" encoding="UTF-8"?>\n' + _E.tostring(rt, encoding="utf-8"), media_type="application/xml; charset=utf-8", headers=_CORS)
 
 def _hdd_songs():
     if not _H_IDX: _init_hdd()
     return [dict(a) for t, a, _ in _H_IDX if t in ("song","child","entry") and a.get("isDir") != "true"]
-
-def _hdd_cov():
-    for _, a, _ in _H_IDX:
-        if a.get("coverArt"): return a["coverArt"]
-    return ""
-
-def _hub_detail(pid, is_pl=False):
-    s_all = _hdd_songs()
-    ca = _hdd_cov()
-    nms = {
-        "hdd_hub_all": "\U0001f4bf [HDD] Kho Nh\u1ea1c Lossless",
-        "hdd_pl_all": "\U0001f4bf [HDD] To\u00e0n B\u1ed9 Nh\u1ea1c Lossless",
-        "hdd_pl_rnd": "\U0001f3b2 [HDD] Ng\u1eabu Nhi\u00ean Lossless",
-        "hdd_pl_new": "\U0001f195 [HDD] Lossless M\u1edbi Th\u00eam",
-        "hdd_pl_top": "\U0001f525 [HDD] Lossless Nghe Nhi\u1ec1u"
-    }
-    nm = nms.get(pid, "\U0001f4bf [HDD] Kho Nh\u1ea1c Lossless")
-    tr = list(s_all)
-    if pid == "hdd_pl_rnd" and tr:
-        _RND.shuffle(tr); tr = tr[:100]
-    elif pid == "hdd_pl_top":
-        tr = list(reversed(tr))[:120]
-    else:
-        tr = tr[:300]
-    dur = str(sum(int(x.get("duration",240)) for x in tr if str(x.get("duration","")).isdigit()) or 3600)
-    rt = _E.Element("subsonic-response", status="ok")
-    if is_pl:
-        el = _E.SubElement(rt, "playlist", id=pid, name=nm, comment="100% HDD Lossless", owner="admin", public="true", songCount=str(len(tr)), duration=dur, created="2026-01-01T00:00:00.000Z", coverArt=ca)
-        for s in tr: _E.SubElement(el, "entry", **s)
-    else:
-        el = _E.SubElement(rt, "album", id=pid, parent="hdd_ar_hub", isDir="true", name=nm, title=nm, album=nm, artist="100% Nh\u1ea1c \u1ed4 C\u1ee9ng (FLAC)", artistId="hdd_ar_hub", coverArt=ca, songCount=str(len(tr)), duration=dur, created="2026-01-01T00:00:00.000Z", year="2026", genre="Lossless")
-        for s in tr: _E.SubElement(el, "song", **s)
-    return rt
 
 @app.middleware("http")
 async def _k9_mw(req, call_next):
@@ -1703,35 +1793,48 @@ async def _k9_mw(req, call_next):
     qd = dict(qi); fv = qd.get("f","").lower()
     js = fv in ("json","jsonp") or "application/json" in req.headers.get("accept","").lower()
     cb = qd.get("callback") if fv == "jsonp" else None
-    if not _check_auth(qd): return await call_next(req)
     lp = _A.get_running_loop()
 
-    if "getplaylists" in pl:
-        cnt = str(len(await lp.run_in_executor(_POOL, _hdd_songs)) or 100)
-        ca = _hdd_cov()
+    # 1. Luong rieng toc do cao cho /getCoverArt (khong bi nghen boi _POOL)
+    if "/getcoverart" in pl:
+        cid = str(qd.get("id") or "").strip()
+        d = await lp.run_in_executor(_ART_POOL, _get_art_bytes, cid) if cid else None
+        if d:
+            return _R(content=d, media_type="image/jpeg", headers={**_CORS, "Content-Length": str(len(d)), "Cache-Control": "public, max-age=604800"})
+        return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1))})
+
+    if not _check_auth(qd): return await call_next(req)
+
+    # 2. Khi bat dau /stream, nap truoc anh bia vao RAM truoc khi phat nhac de Widget xe BYD luon nhan duoc anh
+    if "/stream" in pl or "/download" in pl:
+        sid = str(qd.get("id") or "").strip()
+        if sid:
+            try:
+                await _A.wait_for(lp.run_in_executor(_ART_POOL, _get_art_bytes, sid), timeout=1.5)
+            except Exception:
+                pass
+        return await call_next(req)
+
+    # 3. Tron 50-50 HDD va YouTube Music cho getRandomSongs
+    if "getrandomsongs" in pl:
+        cnt = int(qd.get("size") or qd.get("count") or 30)
+        h_all = await lp.run_in_executor(_POOL, _hdd_songs)
+        if not _YL:
+            await lp.run_in_executor(_POOL, _yt_search, "Bolero Nhac Vang Le Quyen Bang Kieu Thuy Dung")
+        y_all = [dict(x) for x in _YL.values() if not str(x.get("id","")).startswith("loc_")]
+        h_pick = _RND.sample(h_all, min(len(h_all), cnt // 2 + 5)) if h_all else []
+        y_pick = _RND.sample(y_all, min(len(y_all), cnt // 2 + 5)) if y_all else []
         rt = _E.Element("subsonic-response", status="ok")
-        pls = _E.SubElement(rt, "playlists")
-        for pid, nm, c in [
-            ("hdd_pl_all", "\U0001f4bf [HDD] To\u00e0n B\u1ed9 Nh\u1ea1c Lossless", cnt),
-            ("hdd_pl_rnd", "\U0001f3b2 [HDD] Ng\u1eabu Nhi\u00ean Lossless", "100"),
-            ("hdd_pl_new", "\U0001f195 [HDD] Lossless M\u1edbi Th\u00eam", "100"),
-            ("hdd_pl_top", "\U0001f525 [HDD] Lossless Nghe Nhi\u1ec1u", "100")
-        ]:
-            _E.SubElement(pls, "playlist", id=pid, name=nm, comment="100% HDD Lossless", owner="admin", public="true", songCount=c, duration="24000", created="2026-01-01T00:00:00.000Z", coverArt=ca)
-        hrt = await lp.run_in_executor(_POOL, _hdd_xml, p, qi)
-        if hrt is not None and len(hrt) > 0:
-            for x in hrt[0]: pls.append(x)
+        mc = _E.SubElement(rt, "randomSongs")
+        out = []
+        for i in range(max(len(h_pick), len(y_pick))):
+            if i < len(h_pick): out.append(h_pick[i])
+            if i < len(y_pick): out.append(y_pick[i])
+        for s in out[:cnt]:
+            _E.SubElement(mc, "song", **s)
         return _fmt(rt, js, cb)
 
-    rid = str(qd.get("id") or "")
-    if (rid.startswith("hdd_pl_") and "getplaylist" in pl) or (rid == "hdd_hub_all" and any(x in pl for x in ("/getalbum","/getmusicdirectory","/getplaylist"))):
-        rt = await lp.run_in_executor(_POOL, _hub_detail, rid, "playlist" in pl)
-        return _fmt(rt, js, cb)
-
-    if any(x in pl for x in ("/getartists","/getindexes")):
-        hrt = await lp.run_in_executor(_POOL, _hdd_xml, p, qi)
-        if hrt is not None: return _fmt(hrt, js, cb)
-
+    # 4. Tron 50-50 HDD va YouTube Music tren trang Home & giu nguyen All Albums trong Library
     if "getalbumlist" in pl:
         lt = qd.get("type","").lower()
         off = int(qd.get("offset") or 0)
@@ -1739,25 +1842,24 @@ async def _k9_mw(req, call_next):
         mrt = _E.Element("subsonic-response", status="ok")
         mc = _E.SubElement(mrt, "albumList2" if "2" in pl else "albumList")
         h_als = list(hrt[0]) if (hrt is not None and len(hrt) > 0) else []
-        if off == 0 and lt != "starred":
-            await lp.run_in_executor(_POOL, _hdd_songs)
-            ca = _hdd_cov()
-            hub = _E.Element("album", id="hdd_hub_all", parent="hdd_ar_hub", isDir="true", name="\U0001f4bf [HDD] Kho Nh\u1ea1c Lossless", title="\U0001f4bf [HDD] Kho Nh\u1ea1c Lossless", album="\U0001f4bf [HDD] Kho Nh\u1ea1c Lossless", artist="100% Nh\u1ea1c \u1ed4 C\u1ee9ng (FLAC)", artistId="hdd_ar_hub", coverArt=ca, songCount="300", duration="36000", playCount="999", created="2026-01-01T00:00:00.000Z", year="2026", genre="Lossless")
-            h_als.insert(0, hub)
         if lt in ("alphabeticalbyname","alphabeticalbyartist","starred","byyear","bygenre") or off > 0:
             for x in h_als: mc.append(x)
             return _fmt(mrt, js, cb)
         seen_h = {x.attrib.get("id") for x in h_als}
-        for tg, at, _ in _H_IDX:
-            if len(h_als) >= 10: break
-            if tg == "album" and at.get("id") not in seen_h:
-                seen_h.add(at.get("id")); h_als.append(_E.Element("album", **at))
-        if not _YL: await lp.run_in_executor(_POOL, _yt_search, "Th\u00f9y Dung L\u1ec7 Quy\u00ean B\u1eb1ng Ki\u1ec1u Bolero")
+        h_idx_als = [dict(at) for tg, at, _ in _H_IDX if tg == "album" and at.get("id") not in seen_h]
+        if h_idx_als:
+            _RND.shuffle(h_idx_als)
+            for at in h_idx_als[:max(0, 10 - len(h_als))]:
+                h_als.append(_E.Element("album", **at))
+        if lt == "random" and h_als:
+            _RND.shuffle(h_als)
+        if not _YL:
+            await lp.run_in_executor(_POOL, _yt_search, "Thuy Dung Le Quyen Bang Kieu Bolero")
         yt_all = [x for x in _YL.values() if not str(x.get("id","")).startswith("loc_")]
-        if lt == "recent": yt_sl = yt_all[0:8]
-        elif lt == "newest": yt_sl = yt_all[8:16] or yt_all[0:8]
-        elif lt == "frequent": yt_sl = yt_all[16:24] or yt_all[:8]
-        else: yt_sl = _RND.sample(yt_all, min(8, len(yt_all))) if yt_all else []
+        if lt == "recent": yt_sl = yt_all[0:10]
+        elif lt == "newest": yt_sl = yt_all[10:20] or yt_all[0:10]
+        elif lt == "frequent": yt_sl = yt_all[20:30] or yt_all[:10]
+        else: yt_sl = _RND.sample(yt_all, min(10, len(yt_all))) if yt_all else []
         y_als = [_E.Element("album", id="al_"+s["id"], parent=s["artistId"], isDir="true", name=s["album"], title=s["album"], album=s["album"], artist=s["artist"], artistId=s["artistId"], coverArt=s["id"], songCount="1", duration=s["duration"], playCount="1", created=s["created"], year="2026", genre=s.get("genre","YouTube Music")) for s in yt_sl]
         for i in range(max(len(h_als), len(y_als))):
             if i < len(h_als): mc.append(h_als[i])
