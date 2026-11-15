@@ -2751,3 +2751,320 @@ async def _k9_mw(req, call_next):
     return await call_next(req)
 
 _SCACHE.clear()
+
+# --- K10: V1.3.3 AUTO-CLEANUP CACHE, LIVE LYRICS & SCROBBLE HISTORY ---
+import shutil as _SH
+
+_LSTS.update({"structuredLyrics", "line"})
+_INTS.update({"start", "offset"})
+
+_HIST_F = "/data/yt_history_v1.json" if _OS.path.isdir("/data") else "/tmp/yt_history_v1.json"
+_LYR_F  = "/data/lyrics_cache_v1.json" if _OS.path.isdir("/data") else "/tmp/lyrics_cache_v1.json"
+
+try:
+    _YT_HIST = _J.load(open(_HIST_F))
+except Exception:
+    _YT_HIST = {"recent": [], "counts": {}}
+
+try:
+    _LYR_CACHE = _J.load(open(_LYR_F))
+except Exception:
+    _LYR_CACHE = {}
+
+def _save_hist():
+    try:
+        _J.dump(_YT_HIST, open(_HIST_F, "w"))
+    except Exception:
+        pass
+
+def _save_lyr():
+    try:
+        if len(_LYR_CACHE) > 500:
+            for k in list(_LYR_CACHE.keys())[:100]:
+                _LYR_CACHE.pop(k, None)
+        _J.dump(_LYR_CACHE, open(_LYR_F, "w"))
+    except Exception:
+        pass
+
+def _record_yt_play(vid, is_scrobble=False):
+    if not _RE.match(r"^[A-Za-z0-9_-]{11}$", str(vid or "")):
+        return
+    rec = _YT_HIST.setdefault("recent", [])
+    if vid in rec:
+        rec.remove(vid)
+    rec.insert(0, vid)
+    del rec[60:]
+    cnts = _YT_HIST.setdefault("counts", {})
+    cnts[vid] = int(cnts.get(vid, 0)) + 1
+    if vid in _YL:
+        _YL[vid]["playCount"] = str(cnts[vid])
+    ap = _OS.path.join(_AUD_DIR, f"{vid}.aac")
+    if _OS.path.exists(ap):
+        try:
+            _OS.utime(ap, None)
+        except Exception:
+            pass
+    _save_hist()
+
+def _trim_folder(folder, max_bytes, target_bytes):
+    if not _OS.path.isdir(folder):
+        return
+    files = []
+    total = 0
+    for fn in _OS.listdir(folder):
+        fp = _OS.path.join(folder, fn)
+        if _OS.path.isfile(fp):
+            try:
+                st = _OS.stat(fp)
+                files.append((st.st_mtime, st.st_size, fp))
+                total += st.st_size
+            except Exception:
+                pass
+    if total > max_bytes:
+        files.sort(key=lambda x: x[0])
+        for _, sz, fp in files:
+            try:
+                _OS.remove(fp)
+                total -= sz
+                if total <= target_bytes:
+                    break
+            except Exception:
+                pass
+
+def _cleanup_cache_loop():
+    _TM.sleep(20)
+    # Xoa cac thu muc cache anh cu tu v5 -> v19 de giai phong dung luong o cung
+    if _OS.path.isdir("/data"):
+        for dname in _OS.listdir("/data"):
+            if dname.startswith("art_cache_") and dname != _OS.path.basename(_ART_DIR):
+                try:
+                    _SH.rmtree(_OS.path.join("/data", dname), ignore_errors=True)
+                except Exception:
+                    pass
+    while True:
+        try:
+            # Gioi han cache nhac YouTube 2.0 GB (xoa bot file cu nhat xuong con 1.4 GB)
+            _trim_folder(_AUD_DIR, 2000 * 1024 * 1024, 1400 * 1024 * 1024)
+            # Gioi han cache anh bia 400 MB (xoa bot xuong con 280 MB)
+            _trim_folder(_ART_DIR, 400 * 1024 * 1024, 280 * 1024 * 1024)
+            for fn in _OS.listdir("/tmp"):
+                if fn.startswith(("art_in_", "art_out_")):
+                    try:
+                        _OS.remove(_OS.path.join("/tmp", fn))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        _TM.sleep(1800)
+
+_TH.Thread(target=_cleanup_cache_loop, daemon=True).start()
+
+def _parse_lrc(lrc_txt):
+    lines = []
+    for raw_line in str(lrc_txt or "").splitlines():
+        m = _RE.match(r"^\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\](.*)$", raw_line.strip())
+        if m:
+            mm, ss, ms_s, txt = int(m.group(1)), int(m.group(2)), (m.group(3) or "0"), m.group(4).strip()
+            ms = int(ms_s.ljust(3, "0")[:3])
+            lines.append((mm * 60000 + ss * 1000 + ms, txt))
+    return lines
+
+def _fetch_lyrics_data(vid, art, tit):
+    ckey = vid if vid else _nfc(f"{art}_{tit}")
+    if ckey in _LYR_CACHE:
+        return _LYR_CACHE[ckey]
+
+    c_art = _clean_artist_name(art)
+    c_tit = _RE.sub(r"\(.*?\)|\[.*?\]", " ", _clean_seed(tit)).strip() or _clean_seed(tit)
+
+    # 1. Tim loi bai hat dong bo thoi gian thuc (Synced LRC) tren LRCLIB
+    if c_tit:
+        q_str = f"{c_art} {c_tit}".strip()
+        try:
+            req = _U.Request(
+                f"https://lrclib.net/api/search?q={_U.quote(q_str)}",
+                headers={"User-Agent": "Mirasonic/1.3.3 (https://nhacuakhoa.online)"}
+            )
+            with _U.urlopen(req, timeout=5, context=_CTX) as r:
+                items = _J.loads(r.read().decode("utf-8", "ignore"))
+                if isinstance(items, list) and items:
+                    best = None
+                    for it in items:
+                        if it.get("syncedLyrics") and _is_same_artist(c_art, it.get("artistName", ""), False):
+                            best = it; break
+                    if not best:
+                        best = next((it for it in items if it.get("syncedLyrics")), items[0])
+                    if best.get("syncedLyrics"):
+                        lrc_lines = _parse_lrc(best["syncedLyrics"])
+                        if lrc_lines:
+                            plain = "\n".join(x[1] for x in lrc_lines if x[1])
+                            res = {"synced": True, "lines": lrc_lines, "plain": plain}
+                            _LYR_CACHE[ckey] = res; _save_lyr()
+                            return res
+                    if best.get("plainLyrics"):
+                        p_txt = str(best["plainLyrics"]).strip()
+                        l_arr = [(idx * 4000, ln.strip()) for idx, ln in enumerate(p_txt.splitlines()) if ln.strip()]
+                        res = {"synced": False, "lines": l_arr, "plain": p_txt}
+                        _LYR_CACHE[ckey] = res; _save_lyr()
+                        return res
+        except Exception:
+            pass
+
+    # 2. Tim loi bai hat chinh thuc tren YouTube Music (InnerTube MPLYt)
+    if not vid and c_tit:
+        s_items = _ytm_search_items(f"{c_art} {c_tit}".strip(), "EgWKAQIIAWoKEAkQBRAKEAMQBA==", False)
+        if s_items:
+            vid = s_items[0]["id"]
+    if vid:
+        try:
+            d_nx = _ytm_post("next", {"videoId": vid})
+            mply = ""
+            for b in _find_k(d_nx, "browseEndpoint"):
+                bid = str(b.get("browseId") or "")
+                if bid.startswith("MPLY"):
+                    mply = bid; break
+            if mply:
+                d_br = _ytm_post("browse", {"browseId": mply})
+                for sh in _find_k(d_br, "musicDescriptionShelfRenderer"):
+                    runs = (sh.get("description") or {}).get("runs") or []
+                    p_txt = "".join(x.get("text", "") for x in runs).strip()
+                    if p_txt:
+                        l_arr = [(idx * 4000, ln.strip()) for idx, ln in enumerate(p_txt.splitlines()) if ln.strip()]
+                        res = {"synced": False, "lines": l_arr, "plain": p_txt}
+                        _LYR_CACHE[ckey] = res; _save_lyr()
+                        return res
+        except Exception:
+            pass
+
+    return {"synced": False, "lines": [], "plain": ""}
+
+def _build_lyrics_resp(qd, is_structured=False):
+    rid = str(qd.get("id") or "").strip()
+    art = _UD.normalize("NFC", str(qd.get("artist") or "")).strip()
+    tit = _UD.normalize("NFC", str(qd.get("title") or "")).strip()
+    vid = ""
+    if rid:
+        raw_id = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|pl_)+", "", rid)
+        if rid.startswith("hdd"):
+            for tg, at, _ in _H_IDX:
+                aid = _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(at.get("id", "")))
+                if aid in (raw_id, "mf-" + raw_id):
+                    tit = tit or at.get("title") or at.get("name") or ""
+                    art = art or at.get("artist") or ""
+                    break
+        elif _RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id):
+            vid = raw_id
+            if vid in _YL:
+                tit = tit or _YL[vid].get("title", "")
+                art = art or _YL[vid].get("artist", "")
+            else:
+                s = _ensure_vid_meta(vid)
+                if s:
+                    tit = tit or s.get("title", "")
+                    art = art or s.get("artist", "")
+
+    ldata = _fetch_lyrics_data(vid, art, tit)
+    rt = _E.Element("subsonic-response", status="ok")
+    if is_structured:
+        ll = _E.SubElement(rt, "lyricsList")
+        if ldata.get("lines"):
+            sl = _E.SubElement(ll, "structuredLyrics", displayArtist=(art or "Mirasonic"), displayTitle=(tit or "Lyrics"), lang="vi", offset="0", synced=("true" if ldata.get("synced") else "false"))
+            for st_ms, l_txt in ldata["lines"]:
+                _E.SubElement(sl, "line", start=str(st_ms), value=l_txt)
+    else:
+        ly = _E.SubElement(rt, "lyrics", artist=(art or "Mirasonic"), title=(tit or "Lyrics"))
+        if ldata.get("plain"):
+            ly.text = ldata["plain"]
+    return rt
+
+@app.middleware("http")
+async def _k10_mw(req, call_next):
+    if req.method == "OPTIONS":
+        return await call_next(req)
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if not pl.startswith("/rest/"):
+        return await call_next(req)
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    if req.method == "POST":
+        bf = await req.body()
+        if bf:
+            try:
+                qi.extend([(str(k), str(v)) for k, v in _J.loads(bf).items()] if bf.strip().startswith(b"{") else _pq(bf.decode("utf-8", "ignore"), keep_blank_values=True))
+            except Exception:
+                pass
+        async def _rc():
+            return {"type": "http.request", "body": bf, "more_body": False}
+        req._receive = _rc
+    qd = dict(qi); fv = qd.get("f", "").lower()
+    js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
+    cb = qd.get("callback") if fv == "jsonp" else None
+    if not _check_auth(qd):
+        return await call_next(req)
+    lp = _A.get_running_loop()
+
+    # 1. Xu ly Loi bai hat (getLyrics & getLyricsBySongId)
+    if "getlyrics" in pl:
+        rt = await lp.run_in_executor(_REQ_POOL, _build_lyrics_resp, qd, ("bysongid" in pl))
+        return _fmt(rt, js, cb)
+
+    # 2. Ghi nhan lich su nghe nhac (scrobble & stream)
+    if "/scrobble" in pl:
+        sid = str(qd.get("id") or "").strip()
+        if sid.startswith("hdd"):
+            await lp.run_in_executor(_REQ_POOL, _hdd_xml, p, qi)
+        else:
+            m = _RE.search(r"([A-Za-z0-9_-]{11})$", sid)
+            if m:
+                _record_yt_play(m.group(1), True)
+        return _fmt(_E.Element("subsonic-response", status="ok"), js, cb)
+
+    if "/stream" in pl:
+        sid = str(qd.get("id") or "").strip()
+        if not sid.startswith("hdd"):
+            m = _RE.search(r"([A-Za-z0-9_-]{11})$", sid)
+            if m:
+                _record_yt_play(m.group(1), False)
+        return await call_next(req)
+
+    # 3. Dong bo lich su Recently Played & Most Played cua YouTube ra Trang chu Wavio (Tron 50-50 voi HDD)
+    if "getalbumlist" in pl:
+        lt = qd.get("type", "").lower()
+        off = int(qd.get("offset") or 0)
+        if off == 0 and lt in ("recent", "frequent"):
+            hrt = await lp.run_in_executor(_REQ_POOL, _hdd_xml, p, qi)
+            mrt = _E.Element("subsonic-response", status="ok")
+            mc = _E.SubElement(mrt, "albumList2" if "2" in pl else "albumList")
+            h_als = list(hrt[0]) if (hrt is not None and len(hrt) > 0) else []
+            seen_h = {x.attrib.get("id") for x in h_als}
+            h_idx_als = [dict(at) for tg, at, _ in _H_IDX if tg == "album" and at.get("id") not in seen_h]
+            if h_idx_als:
+                _RND.shuffle(h_idx_als)
+                for at in h_idx_als[:max(0, 10 - len(h_als))]:
+                    h_als.append(_E.Element("album", **at))
+            if not _YL:
+                await lp.run_in_executor(_REQ_POOL, _yt_search, "Th\u00f9y Dung L\u1ec7 Quy\u00ean B\u1eb1ng Ki\u1ec1u Bolero")
+
+            yt_sl, seen_y = [], set()
+            if lt == "recent":
+                for vid in _YT_HIST.get("recent", []):
+                    if vid in _YL and vid not in seen_y:
+                        seen_y.add(vid); yt_sl.append(_YL[vid])
+            else:
+                top_v = sorted(_YT_HIST.get("counts", {}).items(), key=lambda x: int(x[1]), reverse=True)
+                for vid, _ in top_v:
+                    if vid in _YL and vid not in seen_y:
+                        seen_y.add(vid); yt_sl.append(_YL[vid])
+
+            for s in _YL.values():
+                if len(yt_sl) >= 10:
+                    break
+                if s["id"] not in seen_y and not str(s["id"]).startswith("loc_"):
+                    seen_y.add(s["id"]); yt_sl.append(s)
+
+            y_als = [_E.Element("album", id="al_"+s["id"], parent=s["artistId"], isDir="true", name=s["album"], title=s["album"], album=s["album"], artist=s["artist"], artistId=s["artistId"], coverArt=s["id"], songCount="1", duration=s["duration"], playCount=str(_YT_HIST.get("counts",{}).get(s["id"], 1)), created=s["created"], year="2026", genre=s.get("genre","YouTube Music")) for s in yt_sl[:10]]
+            for i in range(max(len(h_als), len(y_als))):
+                if i < len(h_als): mc.append(h_als[i])
+                if i < len(y_als): mc.append(y_als[i])
+            return _fmt(mrt, js, cb)
+
+    return await call_next(req)
