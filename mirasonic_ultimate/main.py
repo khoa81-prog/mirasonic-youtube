@@ -3614,3 +3614,186 @@ async def _k12_seek_mw(req, call_next):
     return _SR(_mp3_file_stream(st_b, content_len), status_code=st_code, media_type="audio/mpeg", headers=hdrs)
 
 _SCACHE.clear()
+
+# --- K13: V1.4.5 SYMFONIUM FULL SYNC COMPATIBILITY (CLEAN INDENTATION) ---
+_LSTS.update({
+    "musicFolder", "index", "artist", "album", "song", "child",
+    "entry", "playlist", "genre", "structuredLyrics", "line",
+    "openSubsonicExtensions", "versions", "bookmark"
+})
+_INTS.update({
+    "size", "duration", "bitRate", "track", "discNumber", "year",
+    "playCount", "songCount", "albumCount", "offset", "start",
+    "samplingRate", "bitDepth", "channelCount", "userRating"
+})
+_BOOLS.update({
+    "isDir", "isVideo", "openSubsonic", "synced", "public", "valid"
+})
+
+_orig_fmt_k13 = _fmt
+def _fmt(rt, js, cb=None):
+    for x in rt.iter():
+        a = x.attrib
+        for k in list(a.keys()):
+            if k in _INTS:
+                v_str = str(a[k] or "").strip()
+                if k == "year":
+                    m_y = _RE.search(r"(\d{4})", v_str)
+                    a[k] = m_y.group(1) if m_y else "2026"
+                elif not v_str.lstrip("-").isdigit():
+                    m_d = _RE.search(r"(\d+)", v_str)
+                    a[k] = m_d.group(1) if m_d else "0"
+            elif k in _BOOLS:
+                a[k] = "true" if str(a[k]).lower() in ("true", "1", "yes") else "false"
+    rt.set("openSubsonic", "true")
+    return _orig_fmt_k13(rt, js, cb)
+
+def _build_symfonium_artists(qi):
+    clean_qi = [(k, v) for k, v in qi if k != "musicFolderId"]
+    hrt = _hdd_xml("/rest/getArtists.view", clean_qi)
+    rt = _E.Element("subsonic-response", status="ok")
+    ars_el = _E.SubElement(rt, "artists", ignoredArticles="The El La Los Las Le Les")
+    idx_map = {}
+    seen_ar = set()
+    if hrt is not None and len(hrt) > 0:
+        for idx_node in hrt[0]:
+            iname = idx_node.attrib.get("name") or "#"
+            for ar in idx_node:
+                aid = ar.attrib.get("id", "")
+                if aid and aid not in seen_ar:
+                    seen_ar.add(aid)
+                    at = dict(ar.attrib)
+                    at.setdefault("albumCount", "1")
+                    at.setdefault("coverArt", aid)
+                    idx_map.setdefault(iname, []).append(at)
+    for arid, aname in list(_ARTIST_NAMES.items()):
+        if arid not in seen_ar and aname:
+            seen_ar.add(arid)
+            ch0 = _UD.normalize("NFC", aname.strip())[0].upper() if aname.strip() else "#"
+            if not ch0.isalpha(): ch0 = "#"
+            at = {"id": arid, "name": aname, "coverArt": arid, "albumCount": "10"}
+            if arid in (_STARRED.get("artists") or {}):
+                at["starred"] = "2026-11-15T00:00:00.000Z"
+            idx_map.setdefault(ch0, []).append(at)
+    for iname in sorted(idx_map.keys()):
+        ie = _E.SubElement(ars_el, "index", name=iname)
+        for at in idx_map[iname]:
+            _E.SubElement(ie, "artist", **at)
+    return rt
+
+def _build_symfonium_empty_search(qd, qi, st):
+    clean_qi = [(k, v) for k, v in qi if k != "musicFolderId"]
+    s_off = int(qd.get("songOffset") or 0) if str(qd.get("songOffset", "")).isdigit() else 0
+    s_cnt = int(qd.get("songCount") or 500) if str(qd.get("songCount", "")).isdigit() else 500
+    a_off = int(qd.get("albumOffset") or 0) if str(qd.get("albumOffset", "")).isdigit() else 0
+    a_cnt = int(qd.get("albumCount") or 500) if str(qd.get("albumCount", "")).isdigit() else 500
+    ar_off = int(qd.get("artistOffset") or 0) if str(qd.get("artistOffset", "")).isdigit() else 0
+    ar_cnt = int(qd.get("artistCount") or 500) if str(qd.get("artistCount", "")).isdigit() else 500
+
+    hrt = _hdd_xml("/rest/search3.view", clean_qi)
+    rt = _E.Element("subsonic-response", status="ok")
+    sr = _E.SubElement(rt, st)
+    seen_ar, seen_al, seen_sg = set(), set(), set()
+    if hrt is not None and len(hrt) > 0:
+        for x in hrt[0]:
+            xid = x.attrib.get("id", "")
+            if x.tag == "artist": seen_ar.add(xid)
+            elif x.tag == "album": seen_al.add(xid)
+            elif x.tag == "song": seen_sg.add(xid)
+            sr.append(x)
+    if not seen_sg and not seen_al and _H_IDX:
+        h_ars = [dict(at) for tg, at, _ in _H_IDX if tg == "artist"]
+        h_als = [dict(at) for tg, at, _ in _H_IDX if tg == "album"]
+        h_sgs = [dict(at) for tg, at, _ in _H_IDX if tg in ("song", "child", "entry") and at.get("isDir") != "true"]
+        for at in h_ars[ar_off : ar_off + ar_cnt]:
+            seen_ar.add(at.get("id", ""))
+            _E.SubElement(sr, "artist", **at)
+        for at in h_als[a_off : a_off + a_cnt]:
+            seen_al.add(at.get("id", ""))
+            _E.SubElement(sr, "album", **at)
+        for at in h_sgs[s_off : s_off + s_cnt]:
+            seen_sg.add(at.get("id", ""))
+            _E.SubElement(sr, "song", **at)
+    if s_off == 0 and s_cnt > 0:
+        for vid in (_YT_HIST.get("recent") or []):
+            if vid not in _YL: _ensure_vid_meta(vid)
+        for s in list(_YL.values()):
+            if not isinstance(s, dict) or str(s.get("id", "")).startswith(("loc_", "hdd")): continue
+            sid = s["id"]
+            if sid not in seen_sg:
+                seen_sg.add(sid)
+                _E.SubElement(sr, "song", **s)
+    if a_off == 0 and a_cnt > 0:
+        for s in list(_YL.values()):
+            if not isinstance(s, dict) or str(s.get("id", "")).startswith(("loc_", "hdd")): continue
+            alid = "al_" + s["id"]
+            if alid not in seen_al:
+                seen_al.add(alid)
+                arid = s.get("artistId") or ("ar_" + _H.md5(_nfc(s.get("artist", "YouTube")).encode("utf-8")).hexdigest()[:10])
+                _E.SubElement(sr, "album", id=alid, parent=arid, isDir="true", name=s.get("album", s.get("title", "")), title=s.get("album", s.get("title", "")), album=s.get("album", s.get("title", "")), artist=s.get("artist", "YouTube"), artistId=arid, coverArt=s["id"], songCount="1", duration=str(s.get("duration", "240")), created="2026-01-01T00:00:00.000Z", year="2026", genre=s.get("genre", "YouTube Music"))
+    return rt
+
+@app.middleware("http")
+async def _k13_symfonium_mw(req, call_next):
+    if req.method == "OPTIONS": return await call_next(req)
+    if req.method == "POST":
+        bf = await req.body()
+        if bf:
+            try:
+                extra = [(str(k), str(v)) for k, v in _J.loads(bf).items()] if bf.strip().startswith(b"{") else _pq(bf.decode("utf-8", "ignore"), keep_blank_values=True)
+                old_qs = req.scope.get("query_string", b"").decode("utf-8", "ignore")
+                new_qs = (old_qs + "&" + _ue(extra)).lstrip("&")
+                req.scope["query_string"] = new_qs.encode("utf-8")
+            except Exception: pass
+        req.scope["method"] = "GET"
+
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if not pl.startswith("/rest/"): return await call_next(req)
+
+    _load_addon_opts()
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    if any(k == "musicFolderId" for k, _ in qi):
+        qi = [(k, v) for k, v in qi if k != "musicFolderId"]
+        req.scope["query_string"] = _ue(qi).encode("utf-8")
+
+    qd = dict(qi); fv = qd.get("f", "").lower()
+    js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
+    cb = qd.get("callback") if fv == "jsonp" else None
+    lp = _A.get_running_loop()
+
+    if "getopensubsonicextensions" in pl:
+        rt = _E.Element("subsonic-response", status="ok")
+        for ename in ("formPost", "songLyrics", "transcodeOffset"):
+            ext = _E.SubElement(rt, "openSubsonicExtensions", name=ename)
+            v_el = _E.SubElement(ext, "versions")
+            v_el.text = "1"
+        return _fmt(rt, js, cb)
+
+    if "getlicense" in pl:
+        rt = _E.Element("subsonic-response", status="ok")
+        _E.SubElement(rt, "license", valid="true", email="admin@nhacuakhoa.online", licenseExpires="2099-12-31T23:59:59")
+        return _fmt(rt, js, cb)
+
+    if not _check_auth(qd): return await call_next(req)
+
+    if "getmusicfolders" in pl:
+        rt = _E.Element("subsonic-response", status="ok")
+        mfs = _E.SubElement(rt, "musicFolders")
+        _E.SubElement(mfs, "musicFolder", id="1", name="Mirasonic Music Library")
+        return _fmt(rt, js, cb)
+
+    if "getartists" in pl or "getindexes" in pl:
+        rt = await lp.run_in_executor(_REQ_POOL, _build_symfonium_artists, qi)
+        if "getindexes" in pl and len(rt) > 0: rt[0].tag = "indexes"
+        return _fmt(rt, js, cb)
+
+    if "search" in pl:
+        q_raw = (qd.get("query") or qd.get("any") or qd.get("q") or "").strip('" ')
+        if q_raw == "":
+            st = "searchResult2" if "2" in pl else "searchResult3"
+            rt = await lp.run_in_executor(_REQ_POOL, _build_symfonium_empty_search, qd, qi, st)
+            return _fmt(rt, js, cb)
+
+    return await call_next(req)
+
+_SCACHE.clear()
