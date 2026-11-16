@@ -3071,13 +3071,15 @@ async def _k10_mw(req, call_next):
 
 
 
-# --- K11: V1.3.6 600x600 APP ARTWORK + 90x90 CAR THUMBNAIL & ZERO-DEADLOCK FETCH ---
-_ART_DIR = "/data/art_cache_v23" if _OS.path.isdir("/data") else "/tmp/art_cache_v23"
+
+# --- K11: V1.3.7 60x60 1-PACKET THUMBNAIL + 600x600 HD ARTWORK & STREAM HANDSHAKE ---
+_ART_DIR = "/data/art_cache_v24" if _OS.path.isdir("/data") else "/tmp/art_cache_v24"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_RAM.clear()
 _ART_LOCKS = {}
 _ART_LOCKS_GUARD = _TH.Lock()
 _DL_POOL = _CF.ThreadPoolExecutor(max_workers=32)
+_ART_SERVED_TS = {}
 
 def _get_lock(ckey):
     with _ART_LOCKS_GUARD:
@@ -3094,7 +3096,7 @@ def _fix_url(u):
         u = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w600-h600-l95-rj", u)
     return u
 
-def _dl_fast(url, min_sz=500, timeout=1.8):
+def _dl_fast(url, min_sz=400, timeout=1.6):
     try:
         req = _U.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with _U.urlopen(req, timeout=timeout, context=_CTX) as r:
@@ -3106,7 +3108,7 @@ def _dl_fast(url, min_sz=500, timeout=1.8):
     return None
 
 def _crop_yt_hd(d, mode="square", px=600):
-    if not d or len(d) < 300:
+    if not d or len(d) < 250:
         return None
     tid = f"{_TH.get_ident()}_{_RND.randint(1000,9999)}"
     fin = f"/tmp/art_in_{tid}.jpg"
@@ -3122,9 +3124,9 @@ def _crop_yt_hd(d, mode="square", px=600):
             vf = f"scale={w_sc}:{h_sc},crop={px}:{px}"
         else:
             vf = f"scale={px}:{px}:force_original_aspect_ratio=increase,crop={px}:{px}"
-        qv = "3" if px <= 120 else "2"
+        qv = "5" if px <= 80 else "2"
         p = _SP.run(["ffmpeg","-y","-loglevel","error","-i",fin,"-frames:v","1","-vf",vf,"-pix_fmt","yuvj420p","-strict","-2","-q:v",qv,fout], stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=4)
-        if p.returncode == 0 and _OS.path.exists(fout) and _OS.path.getsize(fout) > 200:
+        if p.returncode == 0 and _OS.path.exists(fout) and _OS.path.getsize(fout) > 150:
             return open(fout, "rb").read()
     except Exception:
         pass
@@ -3141,11 +3143,10 @@ def _fetch_yt_hd_vid(vid):
         return None
     if vid in _YTM_THUMB:
         tu = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w600-h600-l95-rj", _YTM_THUMB[vid])
-        d = _dl_fast(tu, 500, 2.0)
+        d = _dl_fast(tu, 400, 2.0)
         if d:
             return _crop_yt_hd(d, "square", 600) or d
 
-    # Dung _DL_POOL doc lap de tai song song maxresdefault & hqdefault (0.2s, khong bao gio deadlock)
     f_max = _DL_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 2000, 0.9)
     f_hq  = _DL_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 700, 1.5)
 
@@ -3169,7 +3170,7 @@ def _fetch_yt_hd_vid(vid):
         if jpg:
             return jpg
 
-    d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 500, 1.5)
+    d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 400, 1.5)
     if d_mq:
         return _crop_yt_hd(d_mq, "maxres", 600) or d_mq
     return None
@@ -3200,7 +3201,7 @@ def _get_art_600(cid):
                         _ytm_search_artists_and_pls(aname)
             tu = _ARTIST_THUMB.get(clean_s, "")
             if tu:
-                d = _dl_fast(_fix_url(tu), 500, 2.5)
+                d = _dl_fast(_fix_url(tu), 400, 2.5)
                 if d:
                     jpg = _crop_yt_hd(d, "square", 600) or d
                     open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
@@ -3223,7 +3224,7 @@ def _get_art_600(cid):
                     if jpg:
                         open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
                 clean_tu = tu.split("?")[0] if "ytimg.com" in tu else _fix_url(tu)
-                d = _dl_fast(clean_tu, 500, 2.5)
+                d = _dl_fast(clean_tu, 400, 2.5)
                 if d:
                     jpg = _crop_yt_hd(d, "hq43" if "hqdefault" in clean_tu else "square", 600) or d
                     open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
@@ -3242,7 +3243,7 @@ def _get_art_600(cid):
         cf = _OS.path.join(_ART_DIR, _H.md5(ckey.encode()).hexdigest() + ".jpg")
         if _OS.path.exists(cf) and _OS.path.getsize(cf) > 400:
             d = open(cf, "rb").read()
-            if len(_ART_RAM) < 1200: _ART_RAM[ckey] = d
+            if len(_ART_RAM) < 1500: _ART_RAM[ckey] = d
             return d
 
         if kind == "hdd" and _HDD:
@@ -3273,32 +3274,74 @@ def _get_art_600(cid):
                 open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
     return None
 
-def _get_art_bytes(cid, is_thumb=False):
-    d600 = _get_art_600(cid)
-    if not d600:
+def _get_art_thumb_60(cid):
+    if not cid:
         return None
-    # Luon tao san ban Thumbnail 90x90 (~2.5KB) luu vao RAM de phuc vu tuc thi cho Widget xe BYD
-    clean_k = _RE.sub(r"^(hdd\d*_|yt\d*_|al_)+", "", str(cid or "").strip())
-    tkey = "th90_" + clean_k
-    if tkey not in _ART_RAM:
-        cf_th = _OS.path.join(_ART_DIR, _H.md5(tkey.encode()).hexdigest() + "_90.jpg")
-        if _OS.path.exists(cf_th) and _OS.path.getsize(cf_th) > 200:
-            _ART_RAM[tkey] = open(cf_th, "rb").read()
-        else:
-            d_th = _crop_yt_hd(d600, "square", 90) or d600
-            try:
-                open(cf_th, "wb").write(d_th)
-            except Exception:
-                pass
+    s = str(cid or "").strip()
+    is_hdd = bool(_RE.match(r"^hdd\d*_", s))
+    clean_k = _RE.sub(r"^(hdd\d*_|yt\d*_|al_)+", "", s)
+    tkey = "th60_" + clean_k
+    if tkey in _ART_RAM:
+        return _ART_RAM[tkey]
+    cf_th = _OS.path.join(_ART_DIR, _H.md5(tkey.encode()).hexdigest() + "_60.jpg")
+    if _OS.path.exists(cf_th) and _OS.path.getsize(cf_th) > 150:
+        d_th = open(cf_th, "rb").read()
+        _ART_RAM[tkey] = d_th
+        return d_th
+
+    # Neu da co ban 600x600 trong RAM -> thu nho ve 60x60 (~1KB) trong 0.02s
+    k_id = (_ART_MAP.get(clean_k, "") or clean_k) if is_hdd else clean_k
+    ckey600 = f"{'hdd' if is_hdd else 'yt'}_{k_id}"
+    if ckey600 in _ART_RAM:
+        d_th = _crop_yt_hd(_ART_RAM[ckey600], "square", 60) or _ART_RAM[ckey600]
+        try: open(cf_th, "wb").write(d_th)
+        except Exception: pass
+        _ART_RAM[tkey] = d_th
+        return d_th
+
+    # Neu chua co trong RAM -> Lay truc tiep nguon anh nho nhat de tao Thumbnail 60x60 sieu toc (< 0.08s), dong thoi tai ngam 600x600
+    _DL_POOL.submit(_get_art_600, cid)
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_k)
+    if m and not is_hdd:
+        vid = m.group(1)
+        if vid in _YTM_THUMB:
+            tu60 = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w60-h60-p-l85-rj", _YTM_THUMB[vid])
+            d = _dl_fast(tu60, 200, 1.2)
+            if d:
+                d_th = _crop_yt_hd(d, "square", 60) or d
+                try: open(cf_th, "wb").write(d_th)
+                except Exception: pass
+                _ART_RAM[tkey] = d_th
+                return d_th
+        d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 300, 1.2)
+        if d_mq:
+            d_th = _crop_yt_hd(d_mq, "maxres", 60) or d_mq
+            try: open(cf_th, "wb").write(d_th)
+            except Exception: pass
             _ART_RAM[tkey] = d_th
-    return _ART_RAM[tkey] if is_thumb else d600
+            return d_th
+
+    d600 = _get_art_600(cid)
+    if d600:
+        d_th = _crop_yt_hd(d600, "square", 60) or d600
+        try: open(cf_th, "wb").write(d_th)
+        except Exception: pass
+        _ART_RAM[tkey] = d_th
+        return d_th
+    return None
+
+def _get_art_bytes(cid, is_thumb=False):
+    if is_thumb:
+        return _get_art_thumb_60(cid)
+    d600 = _get_art_600(cid)
+    if d600:
+        _DL_POOL.submit(_get_art_thumb_60, cid)
+    return d600
 
 def _prewarm_list(ids):
-    for cid in ids[:10]:
-        try:
-            _get_art_bytes(cid, True)
-        except Exception:
-            pass
+    for cid in ids[:20]:
+        _DL_POOL.submit(_get_art_thumb_60, cid)
+        _DL_POOL.submit(_get_art_600, cid)
 
 def _fmt(rt, js, cb=None):
     _cln(rt)
@@ -3309,9 +3352,9 @@ def _fmt(rt, js, cb=None):
         if ca:
             raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", str(ca))
             if str(ca).startswith("hdd") or str(a.get("id","")).startswith("hdd_"):
-                a["coverArt"] = "hdd23_" + raw_ca
+                a["coverArt"] = "hdd24_" + raw_ca
             else:
-                a["coverArt"] = "yt23_" + raw_ca
+                a["coverArt"] = "yt24_" + raw_ca
             warm.append(a["coverArt"])
         if x.tag in ("song","child","entry") and a.get("isDir") != "true" and not str(a.get("id","")).startswith("hdd_"):
             a.setdefault("bitRate", "256")
@@ -3339,26 +3382,80 @@ async def _k11_mw(req, call_next):
     qd = dict(qi)
     lp = _A.get_running_loop()
 
-    # Neu la yeu cau tu MediaSession / Widget xe BYD (Dalvik/OkHttp/Android, khong phai Dart UI) hoac size <= 320 -> Tra anh Thumbnail 90x90 (~2.5KB)
+    # 1. Phan luong Thumbnail 60x60 (~1KB, 1 goi tin TCP) cho Car Widget va 600x600 HD cho App
     if "/getcoverart" in pl:
         cid = str(qd.get("id") or "").strip()
         sz_s = str(qd.get("size") or "").strip()
         ua = req.headers.get("user-agent", "").lower()
+        clean_id = _RE.sub(r"^(hdd\d*_|yt\d*_|al_)+", "", cid)
         is_car_or_sys = ("dart" not in ua) and any(k in ua for k in ("dalvik", "okhttp", "exoplayer", "android", "media"))
-        want_thumb = is_car_or_sys or (sz_s.isdigit() and int(sz_s) <= 320)
+        want_thumb = is_car_or_sys or (sz_s.isdigit() and int(sz_s) <= 360)
         d = await lp.run_in_executor(_ART_POOL, _get_art_bytes, cid, want_thumb) if cid else None
+        _ART_SERVED_TS[clean_id] = _TM.time()
         if d:
             return _R(content=d, media_type="image/jpeg", headers={**_CORS, "Content-Length": str(len(d)), "Cache-Control": "public, max-age=604800"})
         return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1))})
 
-    # Nap san ca 600x600 va 90x90 vao RAM truoc khi bat dau phat nhac
-    if "/stream" in pl or "/download" in pl or "/getsong" in pl:
+    # 2. Luong /stream: Nhuong duong cho goi tin Thumbnail 60x60 (~1KB) ve toi man hinh xe truoc khi xa nhac
+    if "/stream" in pl or "/download" in pl:
         sid = str(qd.get("id") or "").strip()
+        clean_id = _RE.sub(r"^(hdd\d*_|yt\d*_|al_)+", "", sid)
         if sid:
             try:
-                await _A.wait_for(lp.run_in_executor(_ART_POOL, _get_art_bytes, sid, True), timeout=2.0)
+                await _A.wait_for(lp.run_in_executor(_ART_POOL, _get_art_thumb_60, sid), timeout=1.2)
             except Exception:
                 pass
+            # Neu Wavio dang chuyen bai (Next/Prev), doi toi da 0.55s de Wavio lay xong Thumbnail 60x60 truoc khi phat tieng
+            for _ in range(11):
+                if _TM.time() - _ART_SERVED_TS.get(clean_id, 0) < 2.5:
+                    await _A.sleep(0.12)
+                    break
+                await _A.sleep(0.05)
+
+        # Phat nhac YouTube theo tung manh 32KB muot ma (Khong doc 1 cuc 10MB vao RAM gay nghen goi tin Thumbnail)
+        if not sid.startswith("hdd"):
+            m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_id)
+            if m:
+                vid = m.group(1)
+                _record_yt_play(vid, False)
+                j = _ens_fast(vid)
+                for _ in range(45):
+                    if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 32768) or j["d"]:
+                        break
+                    await _A.sleep(0.08)
+                if _OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) > 0:
+                    fsize = _OS.path.getsize(j["p"])
+                    rng = req.headers.get("range") or req.headers.get("Range")
+                    st_b = 0
+                    if rng and rng.startswith("bytes="):
+                        try:
+                            sp = rng[6:].split("-", 1)
+                            st_b = int(sp[0]) if sp[0] else 0
+                        except Exception:
+                            st_b = 0
+                    async def _smooth_stream(start_pos):
+                        with open(j["p"], "rb") as f:
+                            if start_pos > 0:
+                                f.seek(start_pos)
+                            sent = 0
+                            while True:
+                                c = f.read(32768)
+                                if c:
+                                    yield c
+                                    sent += len(c)
+                                    if sent <= 131072:
+                                        await _A.sleep(0.01)
+                                elif j["d"]:
+                                    break
+                                else:
+                                    await _A.sleep(0.05)
+                    hdrs = {**_CORS, "Accept-Ranges": "bytes"}
+                    if j["d"] and st_b > 0 and st_b < fsize:
+                        hdrs["Content-Range"] = f"bytes {st_b}-{fsize-1}/{fsize}"
+                        hdrs["Content-Length"] = str(fsize - st_b)
+                        return _SR(_smooth_stream(st_b), status_code=206, media_type="audio/aac", headers=hdrs)
+                    return _SR(_smooth_stream(0), status_code=200, media_type="audio/aac", headers=hdrs)
+
     return await call_next(req)
 
 _SCACHE.clear()
