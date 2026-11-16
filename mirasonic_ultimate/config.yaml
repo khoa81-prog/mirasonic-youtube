@@ -1,6 +1,6 @@
 name: "Mirasonic Ultimate"
 description: "Unified Subsonic Server gộp chung HDD + YouTube AAC 256kbps + Tìm kiếm giọng nói & Không dấu"
-version: "1.4.2"
+version: "1.4.3"
 slug: "mirasonic_ultimate"
 init: false
 arch:
