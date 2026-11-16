@@ -3072,13 +3072,13 @@ async def _k10_mw(req, call_next):
 
 
 
-# --- K11: V1.4.0 ZERO-WEBP BASELINE JPEG + INSTANT RAM PRECACHE FOR BYD WIDGET ---
-_ART_DIR = "/data/art_cache_v26" if _OS.path.isdir("/data") else "/tmp/art_cache_v26"
+# --- K11: V1.4.1 PURE 600x600 ULTRA-HD ARTWORK & INSTANT UNIFIED COVER-ID ---
+_ART_DIR = "/data/art_cache_v27" if _OS.path.isdir("/data") else "/tmp/art_cache_v27"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_RAM.clear()
 _ART_LOCKS = {}
 _ART_LOCKS_GUARD = _TH.Lock()
-_DL_POOL = _CF.ThreadPoolExecutor(max_workers=32)
+_DL_POOL = _CF.ThreadPoolExecutor(max_workers=16)
 
 def _get_lock(ckey):
     with _ART_LOCKS_GUARD:
@@ -3091,8 +3091,8 @@ def _fix_url(u):
     if u.startswith("//"):
         u = "https:" + u
     if "yt3.ggpht.com" in u or "googleusercontent.com" in u:
-        u = _RE.sub(r"=s\d+[^/]*$", "=s500-c-k-c0x00ffffff-no-rj", u)
-        u = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l95-rj", u)
+        u = _RE.sub(r"=s\d+[^/]*$", "=s600-c-k-c0x00ffffff-no-rj", u)
+        u = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w600-h600-l95-rj", u)
     return u
 
 def _dl_fast(url, min_sz=400, timeout=2.0):
@@ -3106,9 +3106,12 @@ def _dl_fast(url, min_sz=400, timeout=2.0):
         pass
     return None
 
-def _to_baseline_jpg(d, mode="square", px=500):
-    if not d or len(d) < 250:
+def _crop_yt_hd(d, mode="square", px=600):
+    if not d or len(d) < 300:
         return None
+    # Neu anh da la JPEG vuong tu HDD hoac Google (mode square, px=600) -> Giu nguyen goc sac net 100%, khong nen lai!
+    if mode == "square" and px == 600 and d.startswith(b"\xff\xd8"):
+        return d
     tid = f"{_TH.get_ident()}_{_RND.randint(1000,9999)}"
     fin = f"/tmp/art_in_{tid}.img"
     fout = f"/tmp/art_out_{tid}.jpg"
@@ -3123,23 +3126,13 @@ def _to_baseline_jpg(d, mode="square", px=500):
             vf = f"scale={w_sc}:{h_sc},crop={px}:{px}"
         else:
             vf = f"scale={px}:{px}:force_original_aspect_ratio=increase,crop={px}:{px}"
-        qv = "3" if px <= 260 else "2"
         p = _SP.run([
             "ffmpeg", "-y", "-loglevel", "error", "-i", fin,
             "-frames:v", "1", "-vf", vf,
-            "-pix_fmt", "yuvj420p", "-strict", "-2",
-            "- metadata:s:v", "comment=", "-q:v", qv, fout
+            "-pix_fmt", "yuvj420p", "-strict", "-2", "-q:v", "1", fout
         ], stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=4)
-        if p.returncode != 0 or not _OS.path.exists(fout):
-            p = _SP.run([
-                "ffmpeg", "-y", "-loglevel", "error", "-i", fin,
-                "-frames:v", "1", "-vf", vf,
-                "-pix_fmt", "yuvj420p", "-strict", "-2", "-q:v", qv, fout
-            ], stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=4)
-        if p.returncode == 0 and _OS.path.exists(fout) and _OS.path.getsize(fout) > 250:
-            out_b = open(fout, "rb").read()
-            if out_b.startswith(b"\xff\xd8"):
-                return out_b
+        if p.returncode == 0 and _OS.path.exists(fout) and _OS.path.getsize(fout) > 300:
+            return open(fout, "rb").read()
     except Exception:
         pass
     finally:
@@ -3148,190 +3141,193 @@ def _to_baseline_jpg(d, mode="square", px=500):
                 if _OS.path.exists(fp): _OS.remove(fp)
             except Exception:
                 pass
-    # Chi tra ve d neu d THUC SU la file JPEG (bat dau bang ff d8), TUYET DOI khong tra ve WebP/PNG gia danh JPEG!
     return d if d.startswith(b"\xff\xd8") else None
 
-def _canon_key(cid):
+def _fetch_yt_hd_vid(vid):
+    if not _RE.match(r"^[A-Za-z0-9_-]{11}$", str(vid or "")):
+        return None
+    if vid in _YTM_THUMB:
+        tu = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w600-h600-l95-rj", _YTM_THUMB[vid])
+        d = _dl_fast(tu, 400, 2.0)
+        if d:
+            return _crop_yt_hd(d, "square", 600) or d
+
+    f_max = _DL_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 2000, 0.9)
+    f_hq  = _DL_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 700, 1.5)
+
+    try:
+        d_max = f_max.result(timeout=1.0)
+        if d_max:
+            jpg = _crop_yt_hd(d_max, "maxres", 600)
+            if jpg:
+                return jpg
+    except Exception:
+        pass
+
+    try:
+        d_hq = f_hq.result(timeout=1.6)
+        if d_hq:
+            jpg = _crop_yt_hd(d_hq, "hq43", 600)
+            if jpg:
+                return jpg
+    except Exception:
+        pass
+
+    d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 400, 1.5)
+    if d_mq:
+        return _crop_yt_hd(d_mq, "maxres", 600) or d_mq
+    return None
+
+def _get_art_600(cid):
+    if not cid:
+        return None
     s = str(cid or "").strip()
     is_hdd = bool(_RE.match(r"^hdd\d*_", s))
     clean_s = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", s)
     if clean_s.startswith("al_all_"):
         clean_s = clean_s[7:]
+
+    # 1. Anh dai dien Artist / Kenh YouTube
     if _RE.match(r"^ar_[0-9a-f]{10}$", clean_s) and not is_hdd:
-        return ("ar", clean_s, clean_s)
+        ckey = "ar_" + clean_s
+        if ckey in _ART_RAM: return _ART_RAM[ckey]
+        with _get_lock(ckey):
+            if ckey in _ART_RAM: return _ART_RAM[ckey]
+            cf = _OS.path.join(_ART_DIR, _H.md5(ckey.encode()).hexdigest() + ".jpg")
+            if _OS.path.exists(cf) and _OS.path.getsize(cf) > 400:
+                d = open(cf, "rb").read()
+                _ART_RAM[ckey] = d; return d
+            if clean_s not in _ARTIST_THUMB:
+                aname = _resolve_artist_name(clean_s)
+                if aname:
+                    _yt_web_search(aname, "")
+                    if clean_s not in _ARTIST_THUMB:
+                        _ytm_search_artists_and_pls(aname)
+            tu = _ARTIST_THUMB.get(clean_s, "")
+            if tu:
+                d = _dl_fast(_fix_url(tu), 400, 2.5)
+                if d:
+                    jpg = _crop_yt_hd(d, "square", 600) or d
+                    open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+
+    # 2. Anh bia Danh sach phat (Playlist)
     if clean_s.startswith("pl_") and len(clean_s) > 12 and not is_hdd:
-        return ("pl", clean_s[3:], clean_s[3:])
-    raw_id = clean_s[3:] if (clean_s.startswith("al_") and len(clean_s) == 14) else clean_s
-    if not is_hdd and (s.startswith("yt") or _RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)):
+        raw_pid = clean_s[3:]
+        ckey = "pl_" + raw_pid
+        if ckey in _ART_RAM: return _ART_RAM[ckey]
+        with _get_lock(ckey):
+            if ckey in _ART_RAM: return _ART_RAM[ckey]
+            cf = _OS.path.join(_ART_DIR, _H.md5(ckey.encode()).hexdigest() + ".jpg")
+            if _OS.path.exists(cf) and _OS.path.getsize(cf) > 400:
+                d = open(cf, "rb").read()
+                _ART_RAM[ckey] = d; return d
+            tu = _PL_THUMB.get(raw_pid, "")
+            if tu:
+                m_vi = _RE.search(r"/vi/([A-Za-z0-9_-]{11})/", tu)
+                if m_vi:
+                    jpg = _fetch_yt_hd_vid(m_vi.group(1))
+                    if jpg:
+                        open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+                clean_tu = tu.split("?")[0] if "ytimg.com" in tu else _fix_url(tu)
+                d = _dl_fast(clean_tu, 400, 2.5)
+                if d:
+                    jpg = _crop_yt_hd(d, "hq43" if "hqdefault" in clean_tu else "square", 600) or d
+                    open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+            tr_list = _PL_TRACKS_CACHE.get(raw_pid) or _yt_playlist_tracks(raw_pid)
+            if tr_list and tr_list[0].get("id"):
+                clean_s = tr_list[0]["id"]
+
+    # 3. Anh bia Bai hat / Video / Album (Cat bo tien to al_ neu co de dong nhat 100% ma anh khi Next bai)
+    while clean_s.startswith("al_") and len(clean_s) >= 14:
+        clean_s = clean_s[3:]
+    raw_id = clean_s
+    kind = "hdd" if is_hdd else ("yt" if (s.startswith("yt") or _RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) else "hdd")
+    k_id = (_ART_MAP.get(raw_id, "") or raw_id) if kind == "hdd" else raw_id
+    ckey = f"{kind}_{k_id}"
+    if ckey in _ART_RAM: return _ART_RAM[ckey]
+
+    with _get_lock(ckey):
+        if ckey in _ART_RAM: return _ART_RAM[ckey]
+        cf = _OS.path.join(_ART_DIR, _H.md5(ckey.encode()).hexdigest() + ".jpg")
+        if _OS.path.exists(cf) and _OS.path.getsize(cf) > 400:
+            d = open(cf, "rb").read()
+            if len(_ART_RAM) < 1500: _ART_RAM[ckey] = d
+            return d
+
+        if kind == "hdd" and _HDD:
+            alid = _ART_MAP.get(raw_id, "")
+            cands = []
+            for x in ([raw_id, "mf-"+raw_id, "al-"+alid, alid, "al-"+raw_id, raw_id[3:] if raw_id.startswith(("al-","mf-")) else ""] if alid else [raw_id, "mf-"+raw_id, "al-"+raw_id, raw_id[3:] if raw_id.startswith(("al-","mf-")) else ""]):
+                if x and x not in cands: cands.append(x)
+            with _ART_SEM:
+                for cand in cands:
+                    try:
+                        cq = [x for x in _hdd_q([("id", cand), ("size", "600")]) if x[0] != "f"]
+                        with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent":"Resonus"}), timeout=4, context=_CTX) as r:
+                            d = r.read()
+                            if r.status == 200 and len(d) > 400 and not d.lstrip().startswith(b"<"):
+                                jpg = _crop_yt_hd(d, "square", 600) or d
+                                open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+                    except Exception:
+                        pass
+            qt = _HDD_META.get(raw_id) or _HDD_META.get(k_id)
+            if qt:
+                s_items = _ytm_search_items(qt, "EgWKAQIIAWoKEAkQBRAKEAMQBA==", False)
+                if s_items: raw_id = s_items[0]["id"]
+
         m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
-        vid = m.group(1) if m else raw_id
-        return ("yt", vid, vid)
-    # Voi HDD: Quy dong ca song_id (mf-...) va album_id (al-...) ve cung 1 khoa duy nhat!
-    raw_hdd = _RE.sub(r"^(al-|mf-)", "", raw_id)
-    alid = _ART_MAP.get(raw_id) or _ART_MAP.get(raw_hdd) or _ART_MAP.get("mf-" + raw_hdd) or raw_hdd
-    alid_clean = _RE.sub(r"^(al-|mf-)", "", str(alid))
-    return ("hdd", alid_clean, raw_id)
+        if m:
+            jpg = _fetch_yt_hd_vid(m.group(1))
+            if jpg:
+                open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+    return None
 
-def _fetch_raw_source(kind, k_id, raw_id):
-    if kind == "ar":
-        if k_id not in _ARTIST_THUMB:
-            aname = _resolve_artist_name(k_id)
-            if aname:
-                _yt_web_search(aname, "")
-                if k_id not in _ARTIST_THUMB:
-                    _ytm_search_artists_and_pls(aname)
-        tu = _ARTIST_THUMB.get(k_id, "")
-        if tu:
-            d = _dl_fast(_fix_url(tu), 400, 2.5)
-            if d: return (d, "square")
-        return (None, "square")
-
-    if kind == "pl":
-        tu = _PL_THUMB.get(k_id, "")
-        if tu:
-            m_vi = _RE.search(r"/vi/([A-Za-z0-9_-]{11})/", tu)
-            if m_vi:
-                return _fetch_raw_source("yt", m_vi.group(1), m_vi.group(1))
-            clean_tu = tu.split("?")[0] if "ytimg.com" in tu else _fix_url(tu)
-            d = _dl_fast(clean_tu, 400, 2.5)
-            if d: return (d, "hq43" if "hqdefault" in clean_tu else "square")
-        tr_list = _PL_TRACKS_CACHE.get(k_id) or _yt_playlist_tracks(k_id)
-        if tr_list and tr_list[0].get("id"):
-            vid0 = tr_list[0]["id"]
-            return _fetch_raw_source("yt", vid0, vid0)
-        return (None, "square")
-
-    if kind == "hdd" and _HDD:
-        cands = []
-        for x in [raw_id, "al-"+k_id, k_id, "mf-"+raw_id, "al-"+raw_id]:
-            if x and x not in cands: cands.append(x)
-        with _ART_SEM:
-            for cand in cands:
-                try:
-                    cq = [x for x in _hdd_q([("id", cand), ("size", "500")]) if x[0] != "f"]
-                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent":"Resonus"}), timeout=4, context=_CTX) as r:
-                        d = r.read()
-                        if r.status == 200 and len(d) > 400 and not d.lstrip().startswith(b"<"):
-                            return (d, "square")
-                except Exception:
-                    pass
-        qt = _HDD_META.get(raw_id) or _HDD_META.get(k_id)
-        if qt:
-            s_items = _ytm_search_items(qt, "EgWKAQIIAWoKEAkQBRAKEAMQBA==", False)
-            if s_items:
-                return _fetch_raw_source("yt", s_items[0]["id"], s_items[0]["id"])
-        return (None, "square")
-
-    # kind == "yt": Uu tien hqdefault.jpg (luon ton tai 100% va cuc nhanh) + googleusercontent
-    vid = k_id
-    if vid in _YTM_THUMB:
-        tu = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l95-rj", _YTM_THUMB[vid])
-        d = _dl_fast(tu, 400, 1.8)
-        if d:
-            return (d, "square")
-    f_hq  = _DL_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 600, 1.5)
-    f_max = _DL_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 1500, 0.85)
-    try:
-        d_max = f_max.result(timeout=0.9)
-        if d_max:
-            return (d_max, "maxres")
-    except Exception:
-        pass
-    try:
-        d_hq = f_hq.result(timeout=1.6)
-        if d_hq:
-            return (d_hq, "hq43")
-    except Exception:
-        pass
-    d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 400, 1.4)
-    if d_mq:
-        return (d_mq, "maxres")
-    return (None, "square")
-
-def _ensure_both_res(cid):
-    if not cid:
-        return (None, None)
-    kind, k_id, raw_id = _canon_key(cid)
-    k500 = f"500_{kind}_{k_id}"
-    k240 = f"240_{kind}_{k_id}"
-    if k500 in _ART_RAM and k240 in _ART_RAM:
-        return (_ART_RAM[k500], _ART_RAM[k240])
-
-    with _get_lock(f"{kind}_{k_id}"):
-        if k500 in _ART_RAM and k240 in _ART_RAM:
-            return (_ART_RAM[k500], _ART_RAM[k240])
-        h_base = _H.md5(f"{kind}_{k_id}".encode()).hexdigest()
-        cf500 = _OS.path.join(_ART_DIR, h_base + "_500.jpg")
-        cf240 = _OS.path.join(_ART_DIR, h_base + "_240.jpg")
-
-        if _OS.path.exists(cf500) and _OS.path.exists(cf240):
-            d5 = open(cf500, "rb").read()
-            d2 = open(cf240, "rb").read()
-            if d5.startswith(b"\xff\xd8") and d2.startswith(b"\xff\xd8"):
-                _ART_RAM[k500] = d5
-                _ART_RAM[k240] = d2
-                return (d5, d2)
-
-        raw_d, mode = _fetch_raw_source(kind, k_id, raw_id)
-        if not raw_d:
-            return (None, None)
-
-        d5 = _to_baseline_jpg(raw_d, mode, 500)
-        if not d5:
-            return (None, None)
-        d2 = _to_baseline_jpg(d5, "square", 240) or d5
-
-        try:
-            open(cf500, "wb").write(d5)
-            open(cf240, "wb").write(d2)
-        except Exception:
-            pass
-        _ART_RAM[k500] = d5
-        _ART_RAM[k240] = d2
-        return (d5, d2)
-
-def _get_art_bytes(cid, want_car_240=False):
-    d5, d2 = _ensure_both_res(cid)
-    return d2 if want_car_240 else d5
+def _get_art_bytes(cid, req_size=0):
+    d600 = _get_art_600(cid)
+    if not d600:
+        return None
+    # Chi thu nho neu trinh phat CHU DONG yeu cau ?size=... nho hon 400, con lai LUON tra 600x600 sac net!
+    if 0 < req_size <= 400:
+        px = max(90, min(req_size, 300))
+        tkey = f"th{px}_" + _RE.sub(r"^(hdd\d*_|yt\d*_|al_)+", "", str(cid or "").strip())
+        if tkey in _ART_RAM:
+            return _ART_RAM[tkey]
+        d_th = _crop_yt_hd(d600, "square", px) or d600
+        _ART_RAM[tkey] = d_th
+        return d_th
+    return d600
 
 def _prewarm_list(ids):
-    for cid in ids[:50]:
-        _DL_POOL.submit(_ensure_both_res, cid)
+    # Chi nap nhe nhang 8 bai dau tien de CPU mini PC luon ranh roi phan hoi tuc thi khi chuyen bai
+    for cid in ids[:8]:
+        try:
+            _get_art_600(cid)
+        except Exception:
+            pass
 
 def _fmt(rt, js, cb=None):
     _cln(rt)
     warm = []
     for x in rt.iter():
         a = x.attrib
-        sid = str(a.get("id") or "")
-        ca = str(a.get("coverArt") or "")
-        if x.tag in ("song", "child", "entry") and a.get("isDir") != "true":
-            if sid.startswith("hdd"):
-                alid = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(a.get("albumId") or a.get("parent") or ""))
-                rid_clean = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", sid)
-                if alid and rid_clean:
-                    _ART_MAP[rid_clean] = alid
-                ca_use = ("al-" + alid) if alid else rid_clean
-                a["coverArt"] = "hdd26_" + ca_use
+        ca = a.get("coverArt")
+        if ca:
+            raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", str(ca))
+            while raw_ca.startswith("al_") and len(raw_ca) >= 14:
+                raw_ca = raw_ca[3:]
+            if str(ca).startswith("hdd") or str(a.get("id","")).startswith("hdd_"):
+                a["coverArt"] = "hdd27_" + raw_ca
             else:
-                vid_clean = _RE.sub(r"^(yt\d*_|al_)+", "", sid)
-                a["coverArt"] = "yt26_" + vid_clean
+                a["coverArt"] = "yt27_" + raw_ca
             warm.append(a["coverArt"])
-            if not sid.startswith("hdd"):
-                a.setdefault("bitRate", "256")
-                a.setdefault("suffix", "aac")
-                a.setdefault("contentType", "audio/aac")
-                a.setdefault("samplingRate", "44100")
-                a.setdefault("bitDepth", "16")
-                a.setdefault("channelCount", "2")
-                a.setdefault("type", "music")
-        elif ca:
-            raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", ca)
-            if ca.startswith("hdd") or sid.startswith("hdd"):
-                a["coverArt"] = "hdd26_" + raw_ca
-            else:
-                a["coverArt"] = "yt26_" + raw_ca
-            warm.append(a["coverArt"])
+        if x.tag in ("song","child","entry") and a.get("isDir") != "true" and not str(a.get("id","")).startswith("hdd_"):
+            a.setdefault("bitRate", "256")
+            a.setdefault("suffix", "aac")
+            a.setdefault("contentType", "audio/aac")
+            a.setdefault("samplingRate", "44100")
+            a.setdefault("bitDepth", "16")
+            a.setdefault("channelCount", "2")
+            a.setdefault("type", "music")
     if warm:
         _ART_POOL.submit(_prewarm_list, list(dict.fromkeys(warm)))
     rt.attrib.update({"status":rt.attrib.get("status","ok"),"version":"1.16.1","type":"subsonic","serverVersion":"1.16.1"})
@@ -3353,19 +3349,17 @@ async def _k11_mw(req, call_next):
     if "/getcoverart" in pl:
         cid = str(qd.get("id") or "").strip()
         sz_s = str(qd.get("size") or "").strip()
-        ua = req.headers.get("user-agent", "").lower()
-        # Neu la trinh phat ngam cua xe Android (Dalvik/ExoPlayer/MediaSession) hoac size <= 350 -> Cap anh 240x240 Baseline JPEG (~12KB)
-        is_car = ("dart" not in ua) or (sz_s.isdigit() and int(sz_s) <= 350)
-        d = await lp.run_in_executor(_ART_POOL, _get_art_bytes, cid, is_car) if cid else None
+        req_sz = int(sz_s) if sz_s.isdigit() else 0
+        d = await lp.run_in_executor(_ART_POOL, _get_art_bytes, cid, req_sz) if cid else None
         if d:
             return _R(content=d, media_type="image/jpeg", headers={**_CORS, "Content-Length": str(len(d)), "Cache-Control": "public, max-age=604800"})
         return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1))})
 
-    if "/stream" in pl or "/download" in pl or "/scrobble" in pl:
+    if "/stream" in pl or "/download" in pl or "/getsong" in pl:
         sid = str(qd.get("id") or "").strip()
         if sid:
             try:
-                await _A.wait_for(lp.run_in_executor(_ART_POOL, _ensure_both_res, sid), timeout=1.5)
+                await _A.wait_for(lp.run_in_executor(_ART_POOL, _get_art_600, sid), timeout=2.0)
             except Exception:
                 pass
     return await call_next(req)
