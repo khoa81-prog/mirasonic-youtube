@@ -3274,16 +3274,16 @@ def _get_art_600(cid):
                 open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
     return None
 
-def _get_art_thumb_60(cid):
+def _get_art_thumb_90(cid):
     if not cid:
         return None
     s = str(cid or "").strip()
     is_hdd = bool(_RE.match(r"^hdd\d*_", s))
     clean_k = _RE.sub(r"^(hdd\d*_|yt\d*_|al_)+", "", s)
-    tkey = "th60_" + clean_k
+    tkey = "th90_" + clean_k
     if tkey in _ART_RAM:
         return _ART_RAM[tkey]
-    cf_th = _OS.path.join(_ART_DIR, _H.md5(tkey.encode()).hexdigest() + "_60.jpg")
+    cf_th = _OS.path.join(_ART_DIR, _H.md5(tkey.encode()).hexdigest() + "_90.jpg")
     if _OS.path.exists(cf_th) and _OS.path.getsize(cf_th) > 150:
         d_th = open(cf_th, "rb").read()
         _ART_RAM[tkey] = d_th
@@ -3293,7 +3293,7 @@ def _get_art_thumb_60(cid):
     k_id = (_ART_MAP.get(clean_k, "") or clean_k) if is_hdd else clean_k
     ckey600 = f"{'hdd' if is_hdd else 'yt'}_{k_id}"
     if ckey600 in _ART_RAM:
-        d_th = _crop_yt_hd(_ART_RAM[ckey600], "square", 60) or _ART_RAM[ckey600]
+        d_th = _crop_yt_hd(_ART_RAM[ckey600], "square", 90) or _ART_RAM[ckey600]
         try: open(cf_th, "wb").write(d_th)
         except Exception: pass
         _ART_RAM[tkey] = d_th
@@ -3308,14 +3308,14 @@ def _get_art_thumb_60(cid):
             tu60 = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w60-h60-p-l85-rj", _YTM_THUMB[vid])
             d = _dl_fast(tu60, 200, 1.2)
             if d:
-                d_th = _crop_yt_hd(d, "square", 60) or d
+                d_th = _crop_yt_hd(d, "square", 90) or d
                 try: open(cf_th, "wb").write(d_th)
                 except Exception: pass
                 _ART_RAM[tkey] = d_th
                 return d_th
         d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 300, 1.2)
         if d_mq:
-            d_th = _crop_yt_hd(d_mq, "maxres", 60) or d_mq
+            d_th = _crop_yt_hd(d_mq, "maxres", 90) or d_mq
             try: open(cf_th, "wb").write(d_th)
             except Exception: pass
             _ART_RAM[tkey] = d_th
@@ -3323,7 +3323,7 @@ def _get_art_thumb_60(cid):
 
     d600 = _get_art_600(cid)
     if d600:
-        d_th = _crop_yt_hd(d600, "square", 60) or d600
+        d_th = _crop_yt_hd(d600, "square", 90) or d600
         try: open(cf_th, "wb").write(d_th)
         except Exception: pass
         _ART_RAM[tkey] = d_th
@@ -3332,15 +3332,15 @@ def _get_art_thumb_60(cid):
 
 def _get_art_bytes(cid, is_thumb=False):
     if is_thumb:
-        return _get_art_thumb_60(cid)
+        return _get_art_thumb_90(cid)
     d600 = _get_art_600(cid)
     if d600:
-        _DL_POOL.submit(_get_art_thumb_60, cid)
+        _DL_POOL.submit(_get_art_thumb_90, cid)
     return d600
 
 def _prewarm_list(ids):
     for cid in ids[:20]:
-        _DL_POOL.submit(_get_art_thumb_60, cid)
+        _DL_POOL.submit(_get_art_thumb_90, cid)
         _DL_POOL.submit(_get_art_600, cid)
 
 def _fmt(rt, js, cb=None):
@@ -3402,13 +3402,13 @@ async def _k11_mw(req, call_next):
         clean_id = _RE.sub(r"^(hdd\d*_|yt\d*_|al_)+", "", sid)
         if sid:
             try:
-                await _A.wait_for(lp.run_in_executor(_ART_POOL, _get_art_thumb_60, sid), timeout=1.2)
+                await _A.wait_for(lp.run_in_executor(_ART_POOL, _get_art_thumb_90, sid), timeout=1.2)
             except Exception:
                 pass
             # Neu Wavio dang chuyen bai (Next/Prev), doi toi da 0.55s de Wavio lay xong Thumbnail 60x60 truoc khi phat tieng
-            for _ in range(11):
-                if _TM.time() - _ART_SERVED_TS.get(clean_id, 0) < 2.5:
-                    await _A.sleep(0.12)
+            for _ in range(25):
+                if _TM.time() - _ART_SERVED_TS.get(clean_id, 0) < 3.5:
+                    await _A.sleep(0.1)
                     break
                 await _A.sleep(0.05)
 
