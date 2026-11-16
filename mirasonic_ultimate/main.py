@@ -3365,3 +3365,158 @@ async def _k11_mw(req, call_next):
     return await call_next(req)
 
 _SCACHE.clear()
+
+# --- K12: V1.4.2 YOUTUBE & YOUTUBE MUSIC SEEK BAR FIX (HTTP 206 BYTE-RANGE + TIMEOFFSET) ---
+def _get_yt_est_size(vid, cur_sz=0):
+    dur_v = 240
+    if vid in _YL and str(_YL[vid].get("duration", "")).isdigit():
+        dur_v = int(_YL[vid]["duration"])
+    est = max(dur_v * 32000, cur_sz, 102400)
+    return est
+
+@app.middleware("http")
+async def _k12_seek_mw(req, call_next):
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if not pl.startswith("/rest/") or ("/stream" not in pl and "/download" not in pl):
+        return await call_next(req)
+
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    qd = dict(qi)
+    if not _check_auth(qd):
+        return await call_next(req)
+
+    sid = str(qd.get("id") or "").strip()
+    if not sid or sid.startswith("hdd"):
+        return await call_next(req)
+
+    clean_id = _RE.sub(r"^(hdd\d*_|yt\d*_|al_)+", "", sid)
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_id)
+    if not m:
+        return await call_next(req)
+
+    vid = m.group(1)
+    lp = _A.get_running_loop()
+    _record_yt_play(vid, False)
+    _DL_POOL.submit(_get_art_600, sid)
+
+    # 1. Kiem tra tham so timeOffset (tua theo so giay cua Subsonic)
+    t_off = 0
+    for tk in ("timeOffset", "timeoffset", "offset"):
+        if str(qd.get(tk, "")).isdigit() and int(qd[tk]) > 0:
+            t_off = int(qd[tk])
+            break
+
+    # 2. Kiem tra HTTP Range Header (tua thanh seek bar theo Byte cua Wavio / ExoPlayer)
+    rng = req.headers.get("range") or req.headers.get("Range") or ""
+    st_b = 0
+    end_b = None
+    has_range = False
+    if rng.startswith("bytes="):
+        has_range = True
+        try:
+            sp = rng[6:].split("-", 1)
+            st_b = int(sp[0]) if sp[0].strip() else 0
+            if len(sp) > 1 and sp[1].strip().isdigit():
+                end_b = int(sp[1].strip())
+        except Exception:
+            st_b = 0
+
+    j = _ens_fast(vid)
+    # Doi file cache khoi tao it nhat 64KB dau tien
+    for _ in range(50):
+        if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 65536) or j["d"]:
+            break
+        await _A.sleep(0.08)
+
+    # Quy doi timeOffset sang vi tri byte (256kbps AAC = 32000 bytes/giay) neu file da co san
+    if t_off > 0 and st_b == 0:
+        st_b = t_off * 32000
+        has_range = True
+
+    cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
+
+    # Neu nguoi dung keo tua toi doan file dang tai do, doi them toi da 2.5s cho file duoi kip
+    if st_b > 0 and not j["d"] and cur_sz < st_b + 65536:
+        for _ in range(25):
+            cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
+            if cur_sz >= st_b + 65536 or j["d"]:
+                break
+            await _A.sleep(0.1)
+
+    cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
+
+    # 3. Neu tua xa (lien khuc dai) vuot qua phan da tai -> Dung ffmpeg -ss nhay thang toi giay do!
+    if st_b > 0 and not j["d"] and cur_sz < st_b:
+        seek_sec = t_off if t_off > 0 else max(1, st_b // 32000)
+        async def _direct_seek_gen(sec):
+            c1 = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "-f", "140/251/bestaudio/best", "-g", f"https://www.youtube.com/watch?v={vid}"]
+            try:
+                u_out = await lp.run_in_executor(_REQ_POOL, lambda: _SP.check_output(c1, timeout=6).decode().strip().splitlines()[0])
+                c2 = ["ffmpeg", "-loglevel", "error", "-ss", str(sec), "-i", u_out, "-vn", "-ac", "2", "-ar", "44100", "-c:a", "aac", "-b:a", "256k", "-f", "adts", "pipe:1"]
+                p2 = _SP.Popen(c2, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
+                try:
+                    while True:
+                        chunk = await lp.run_in_executor(_REQ_POOL, p2.stdout.read, 32768)
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    try: p2.kill()
+                    except Exception: pass
+            except Exception:
+                pass
+        total_est = _get_yt_est_size(vid, cur_sz)
+        end_pos = total_est - 1
+        hdrs = {
+            **_CORS,
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes {st_b}-{end_pos}/{total_est}"
+        }
+        return _SR(_direct_seek_gen(seek_sec), status_code=206, media_type="audio/aac", headers=hdrs)
+
+    # 4. Phat va Tua truc tiep tren file cache voi chuan HTTP 206 Partial Content
+    if cur_sz > 0:
+        total_sz = cur_sz if j["d"] else _get_yt_est_size(vid, cur_sz)
+        if st_b >= total_sz:
+            st_b = max(0, total_sz - 65536)
+        real_end = min(end_b, total_sz - 1) if (end_b is not None and end_b < total_sz) else (total_sz - 1)
+        content_len = max(0, real_end - st_b + 1)
+
+        if req.method == "HEAD":
+            hdrs = {
+                **_CORS,
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_len if has_range else total_sz)
+            }
+            if has_range:
+                hdrs["Content-Range"] = f"bytes {st_b}-{real_end}/{total_sz}"
+            return _R(content=b"", status_code=(206 if has_range else 200), media_type="audio/aac", headers=hdrs)
+
+        async def _range_file_stream(start_pos, max_bytes):
+            sent = 0
+            with open(j["p"], "rb") as f:
+                if start_pos > 0:
+                    f.seek(start_pos)
+                while sent < max_bytes:
+                    to_read = min(65536, max_bytes - sent)
+                    c = f.read(to_read)
+                    if c:
+                        yield c
+                        sent += len(c)
+                    elif j["d"]:
+                        break
+                    else:
+                        await _A.sleep(0.05)
+
+        hdrs = {
+            **_CORS,
+            "Accept-Ranges": "bytes"
+        }
+        if j["d"]:
+            hdrs["Content-Length"] = str(content_len)
+        if has_range:
+            hdrs["Content-Range"] = f"bytes {st_b}-{real_end}/{total_sz}"
+            return _SR(_range_file_stream(st_b, content_len), status_code=206, media_type="audio/aac", headers=hdrs)
+        return _SR(_range_file_stream(0, total_sz), status_code=200, media_type="audio/aac", headers=hdrs)
+
+    return await call_next(req)
