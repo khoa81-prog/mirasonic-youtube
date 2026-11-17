@@ -4634,11 +4634,53 @@ async def _k15_user_isolation_mw(req, call_next):
         _CUR_USER_CTX.reset(tok)
 
 _SCACHE.clear()
-# --- K16: V1.6.0 10/10 CAR ARTWORK SYNC (PRE-STREAM LOCK + SILENT NEXT-1 PREFETCH) ---
-_ART_DIR = "/data/art_cache_v31" if _OS.path.isdir("/data") else "/tmp/art_cache_v31"
+# --- K16: V1.6.1 10/10 CAR ARTWORK SYNC + BORDERLESS 500x500 SQUARE CROP (ON-DEMAND + NEXT-1) ---
+_ART_DIR = "/data/art_cache_v32" if _OS.path.isdir("/data") else "/tmp/art_cache_v32"
 _OS.makedirs(_ART_DIR, exist_ok=True)
+_ART_RAM.clear()
 _FAST_ART_POOL = _CF.ThreadPoolExecutor(max_workers=12)
 _NEXT_ONE_MAP = {}
+
+def _crop_500_borderless(d, mode="hq43"):
+    if not d or len(d) < 250:
+        return None
+    if mode == "square" and d.startswith(b"\xff\xd8"):
+        return d
+
+    tid = f"{_TH.get_ident()}_{_RND.randint(1000,9999)}"
+    fin = f"/tmp/art_in_{tid}.img"
+    fout = f"/tmp/art_out_{tid}.jpg"
+    try:
+        open(fin, "wb").write(d)
+        if mode == "maxres":
+            # Anh 16:9 HD -> Phong va cat vuong 500x500 o tam
+            vf = "scale=890:500:force_original_aspect_ratio=increase,crop=500:500"
+        elif mode == "hq43":
+            # Anh 480x360 (4:3) co 2 vien den 45px tren/duoi -> Cat bo 100% 2 vien den lay vung 16:9 o giua roi dua ve 500x500 vuong vuc!
+            vf = "crop=iw:iw*9/16:0:(ih-iw*9/16)/2,scale=890:500:force_original_aspect_ratio=increase,crop=500:500"
+        else:
+            vf = "scale=500:500:force_original_aspect_ratio=increase,crop=500:500"
+
+        p = _SP.run([
+            "ffmpeg", "-y", "-loglevel", "error", "-i", fin,
+            "-frames:v", "1", "-vf", vf,
+            "-pix_fmt", "yuvj420p", "-strict", "-2",
+            "-map_metadata", "-1", "-q:v", "3", fout
+        ], stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=3.0)
+        if p.returncode == 0 and _OS.path.exists(fout) and _OS.path.getsize(fout) > 300:
+            out_b = open(fout, "rb").read()
+            if out_b.startswith(b"\xff\xd8"):
+                return out_b
+    except Exception:
+        pass
+    finally:
+        for fp in (fin, fout):
+            try:
+                if _OS.path.exists(fp):
+                    _OS.remove(fp)
+            except Exception:
+                pass
+    return d if d.startswith(b"\xff\xd8") else None
 
 def _norm_art_key(cid):
     s = str(cid or "").strip()
@@ -4662,6 +4704,33 @@ def _norm_art_key(cid):
     m_v = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
     k_id = m_v.group(1) if m_v else raw_id
     return ("yt", k_id, raw_id)
+
+def _fetch_yt_square_500(vid):
+    # 1. Neu bai hat co anh vuong goc tren YouTube Music CDN -> Lay thang anh 500x500 vuong (0% CPU!)
+    if vid in _YTM_THUMB:
+        tu = _YTM_THUMB[vid]
+        if tu.startswith("//"):
+            tu = "https:" + tu
+        if "googleusercontent.com" in tu or "ggpht.com" in tu:
+            tu = _RE.sub(r"=s\d+[^/]*$", "=s500-c-k-c0x00ffffff-no-rj", tu)
+            tu = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l90-rj", tu)
+            d = _dl_fast(tu, 400, 1.3)
+            if d and d.startswith(b"\xff\xd8"):
+                return d
+
+    # 2. Neu la Video YouTube (16:9 / 4:3) -> Lay maxresdefault hoac hqdefault va cat sach 2 vien den ve dung 500x500 vuong vuc!
+    d_max = _dl_fast(f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 1800, 0.75)
+    if d_max:
+        jpg = _crop_500_borderless(d_max, "maxres")
+        if jpg:
+            return jpg
+
+    d_hq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 500, 1.2)
+    if d_hq:
+        jpg = _crop_500_borderless(d_hq, "hq43")
+        if jpg:
+            return jpg
+    return None
 
 def _get_art_600(cid):
     if not cid:
@@ -4693,27 +4762,21 @@ def _get_art_600(cid):
                         with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent": "Resonus"}), timeout=2.5, context=_CTX) as r:
                             d = r.read()
                             if r.status == 200 and len(d) > 300 and not d.lstrip().startswith(b"<"):
-                                open(cf, "wb").write(d)
-                                _ART_RAM[ckey] = d
-                                return d
+                                jpg = _crop_500_borderless(d, "square")
+                                if jpg:
+                                    open(cf, "wb").write(jpg)
+                                    _ART_RAM[ckey] = jpg
+                                    return jpg
                     except Exception:
                         pass
 
             m_v = _RE.search(r"([A-Za-z0-9_-]{11})$", str(k_id))
             if m_v:
-                vid = m_v.group(1)
-                if vid in _YTM_THUMB:
-                    tu = _YTM_THUMB[vid]
-                    if tu.startswith("//"):
-                        tu = "https:" + tu
-                    tu = _RE.sub(r"=s\d+[^/]*$", "=s500-c-k-c0x00ffffff-no-rj", tu)
-                    tu = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l90-rj", tu)
-                    d = _dl_fast(tu, 400, 1.4)
-                    if d and d.startswith(b"\xff\xd8"):
-                        open(cf, "wb").write(d); _ART_RAM[ckey] = d; return d
-                d_hq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 500, 1.4)
-                if d_hq:
-                    open(cf, "wb").write(d_hq); _ART_RAM[ckey] = d_hq; return d_hq
+                jpg = _fetch_yt_square_500(m_v.group(1))
+                if jpg:
+                    open(cf, "wb").write(jpg)
+                    _ART_RAM[ckey] = jpg
+                    return jpg
         except Exception:
             pass
     return None
@@ -4739,21 +4802,20 @@ def _patched_fmt_k16(rt, js, cb=None):
                 if alid and rid_clean:
                     _ART_MAP[rid_clean] = alid
                 raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", ca or ("al-" + alid if alid else rid_clean))
-                a["coverArt"] = "hdd31_" + raw_ca
+                a["coverArt"] = "hdd32_" + raw_ca
             else:
                 vid_clean = _RE.sub(r"^(yt\d*_|al_)+", "", sid)
-                a["coverArt"] = "yt31_" + vid_clean
+                a["coverArt"] = "yt32_" + vid_clean
             song_seq.append((_norm_art_key(sid)[1], a["coverArt"]))
         elif ca:
             raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", ca)
             while raw_ca.startswith("al_") and len(raw_ca) >= 14:
                 raw_ca = raw_ca[3:]
             if ca.startswith("hdd") or sid.startswith("hdd"):
-                a["coverArt"] = "hdd31_" + raw_ca
+                a["coverArt"] = "hdd32_" + raw_ca
             else:
-                a["coverArt"] = "yt31_" + raw_ca
+                a["coverArt"] = "yt32_" + raw_ca
 
-    # Ghi nho duy nhat 1 bai ke tiep (Next-1) de khi bai truoc dang hat thi tai san anh cua DUNG 1 bai ke tiep!
     for idx in range(len(song_seq) - 1):
         _NEXT_ONE_MAP[song_seq[idx][0]] = song_seq[idx + 1][1]
 
@@ -4762,7 +4824,7 @@ def _patched_fmt_k16(rt, js, cb=None):
         b = _J.dumps({"subsonic-response": _x2d(rt, 0)})
         return _R(content=f"{cb}({b});" if cb else b, media_type="application/json; charset=utf-8", headers=_CORS)
     rt.set("xmlns", "http://subsonic.org/restapi")
-    return _R(content=b'<?xml version="1.0" encoding="UTF-8"?>\n' + _E.tostring(rt, encoding="utf-8"), media_type="application/xml; charset=utf-8", headers=_CORS)
+    return _R(content=b'<?xml version="1.0" encoding="UTF-8"?>\n' + _E.tostring(rt, encoding="utf-8"), media_type="application/json; charset=utf-8" if js else "application/xml; charset=utf-8", headers=_CORS)
 
 _orig_fmt_k11 = _patched_fmt_k16
 
@@ -4776,7 +4838,6 @@ async def _k16_classic_art_mw(req, call_next):
     qd = dict(qi)
     lp = _A.get_running_loop()
 
-    # 1. Tra anh 500x500 tuc thi tu RAM/Disk
     if "/getcoverart" in pl:
         cid = str(qd.get("id") or "").strip()
         d = await lp.run_in_executor(_FAST_ART_POOL, _get_art_600, cid) if cid else None
@@ -4792,15 +4853,12 @@ async def _k16_classic_art_mw(req, call_next):
             )
         return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1))})
 
-    # 2. Bi quyet dat 10/10 tren Wavio ma khong nang may:
-    # - Giu nhip 0.8s de anh cua bai dang bat KIP VAO RAM truoc khi Wavio goi getCoverArt.
-    # - Am tham nap truoc DUNG 1 BAI KE TIEP (Next-1) de khi chuyen bai la co anh trong 0.0005s!
     if "/stream" in pl or "/download" in pl:
         sid = str(qd.get("id") or "").strip()
         rng = req.headers.get("range") or req.headers.get("Range") or ""
         if sid and ((not rng) or rng.startswith("bytes=0-")):
             try:
-                await _A.wait_for(lp.run_in_executor(_FAST_ART_POOL, _get_art_600, sid), timeout=0.85)
+                await _A.wait_for(lp.run_in_executor(_FAST_ART_POOL, _get_art_600, sid), timeout=0.95)
             except Exception:
                 pass
             _, cur_k, _ = _norm_art_key(sid)
