@@ -4775,3 +4775,79 @@ async def _k15_user_isolation_mw(req, call_next):
         _CUR_USER_CTX.reset(tok)
 
 _SCACHE.clear()
+# --- K17: V1.5.5 ABSOLUTE ZERO-FAIL CAR ARTWORK (LOCAL ALIAS LOCK & INSTANT BYD SYNC) ---
+_ACTIVE_COVER_FILE = "/tmp/mirasonic_active_cover.jpg"
+_DEFAULT_COVER_BYTES = _PNG_1X1
+
+def _update_active_cover(d):
+    try:
+        if d and len(d) > 200:
+            with open(_ACTIVE_COVER_FILE, "wb") as f:
+                f.write(d)
+    except Exception:
+            pass
+
+_orig_get_art_bytes_k16 = _get_art_bytes
+def _get_art_bytes(cid, req_size=0):
+    d = _orig_get_art_bytes_k16(cid, req_size)
+    if d and len(d) > 300:
+        _update_active_cover(d)
+        return d
+    try:
+        if _OS.path.exists(_ACTIVE_COVER_FILE) and _OS.path.getsize(_ACTIVE_COVER_FILE) > 300:
+            return open(_ACTIVE_COVER_FILE, "rb").read()
+    except Exception:
+        pass
+    return d or _DEFAULT_COVER_BYTES
+
+@app.middleware("http")
+async def _k17_instant_art_mw(req, call_next):
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if not pl.startswith("/rest/"):
+        return await call_next(req)
+
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    qd = dict(qi)
+    lp = _A.get_running_loop()
+
+    if "/getcoverart" in pl:
+        cid = str(qd.get("id") or "").strip()
+        sz_s = str(qd.get("size") or "").strip()
+        req_sz = int(sz_s) if sz_s.isdigit() else 0
+        
+        # Neu Wavio goi getCoverArt ma bi qua tai, tra ve ngay lap tuc file anh active dang phat
+        d = await lp.run_in_executor(_ART_POOL, _get_art_bytes, cid, req_sz) if cid else None
+        if not d or len(d) < 300:
+            try:
+                if _OS.path.exists(_ACTIVE_COVER_FILE) and _OS.path.getsize(_ACTIVE_COVER_FILE) > 300:
+                    d = open(_ACTIVE_COVER_FILE, "rb").read()
+            except Exception:
+                pass
+        if not d:
+            d = _DEFAULT_COVER_BYTES
+
+        etag = f'"{_H.md5(d[:256]).hexdigest()}"'
+        return _R(
+            content=d,
+            media_type="image/jpeg",
+            headers={
+                **_CORS,
+                "Content-Length": str(len(d)),
+                "Cache-Control": "public, max-age=86400, immutable",
+                "ETag": etag
+            }
+        )
+
+    if "/stream" in pl or "/download" in pl:
+        sid = str(qd.get("id") or "").strip()
+        if sid:
+            try:
+                d_pre = await lp.run_in_executor(_ART_POOL, _get_art_600, sid)
+                if d_pre and len(d_pre) > 300:
+                    _update_active_cover(d_pre)
+            except Exception:
+                pass
+
+    return await call_next(req)
+
+_SCACHE.clear()
