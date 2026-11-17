@@ -3956,177 +3956,249 @@ async def _k13_endless_mw(req, call_next):
 
 _SCACHE.clear()
 
-# --- K14: V1.4.7 SMART HDD SIMILARITY ENGINE (YTM-GUIDED HDD MATCHING + VN/INTL LANGUAGE LOCK) ---
-_HDD_SIM_CACHE = {}
 
-_VN_TOKENS = {
+# --- K14: V1.4.8 TRUE VIETNAMESE/INTL LANGUAGE SEPARATION & FULL HDD INDEXER ---
+_HDD_SIM_CACHE = {}
+_FULL_HDD_SONGS = []
+_FULL_HDD_TS = 0
+_FULL_HDD_LOCK = _TH.Lock()
+
+# Chi chua cac tu thuan Viet 100% (Da loai bo hoan toan cac tu trung voi tieng Anh nhu: may, long, song, me, do, la, con, co, don, ha, tim, van, son, lan)
+_STRICT_VN_WORDS = {
     "anh", "em", "yeu", "tinh", "buon", "dem", "mua", "nho", "thuong", "doi",
-    "kiep", "ngheo", "xua", "nay", "chieu", "tim", "trang", "bien", "que", "huong",
-    "me", "cha", "long", "nguoi", "xuan", "ha", "thu", "dong", "hoa", "la",
-    "canh", "chim", "troi", "may", "gio", "song", "nuoc", "con", "duong", "pho",
-    "cuoi", "dau", "xa", "gan", "khoc", "cuoi", "sau", "le", "loi", "viet",
-    "voi", "tinh", "khuc", "vang", "bolero", "lien", "tuyet", "pham", "nhac", "thanh",
-    "co", "don", "vang", "bong", "mot", "thoi", "nua", "vung", "tau", "sai",
-    "gon", "ha", "noi", "hue", "da", "lat", "mien", "tay", "송", "ngay", "thang", "nam"
+    "kiep", "ngheo", "xua", "chieu", "trang", "bien", "que", "huong", "nguoi",
+    "xuan", "thu", "dong", "hoa", "canh", "chim", "troi", "gio", "nuoc",
+    "duong", "pho", "cuoi", "dau", "khoc", "sau", "le", "loi", "viet", "voi",
+    "khuc", "vang", "bolero", "lien", "tuyet", "pham", "nhac", "thanh", "bong",
+    "thoi", "nua", "vung", "tau", "sai", "gon", "noi", "hue", "mien", "ngay",
+    "thang", "nam", "duyen", "phan", "ngan", "cach", "biet", "ly", "hon", "au",
+    "lo", "vui", "chuyen", "chung", "minh", "coi", "vong", "tay", "mat", "moi"
 }
 
-_VN_ARTIST_KW = {
+_STRICT_VN_ARTISTS = (
     "huong lan", "che linh", "tuan vu", "giao linh", "nhu quynh", "truong vu",
     "manh quynh", "phi nhung", "le quyen", "bang kieu", "thuy dung", "quang le",
     "dan nguyen", "ngoc son", "duy khanh", "thanh tuyen", "khanh ly", "tuan ngoc",
     "elvis phuong", "ngoc lan", "don ho", "minh tuyet", "cam ly", "dam vinh hung",
     "my tam", "ha anh tuan", "quang dung", "hong nhung", "thanh lam", "my linh",
-    "lam anh", "luu bich", "to chan phong", "khanh ha", "중", "phuong dung",
-    "hoang oanh", "trung chinh", "manh dinh", " sơn tuyền", "son tuyen", "vu khanh",
-    "ngoc ha", "y lan", "quang linh", "cam van", "khac trieu", "trinh cong son",
-    "ngo thuy mien", "vu thanh an", "lam phuong", "chau ky", "truc phuong"
-}
+    "lam anh", "luu bich", "to chan phong", "khanh ha", "phuong dung", "hoang oanh",
+    "trung chinh", "manh dinh", "son tuyen", "vu khanh", "ngoc ha", "y lan",
+    "quang linh", "cam van", "khac trieu", "trinh cong son", "ngo thuy mien",
+    "vu thanh an", "lam phuong", "chau ky", "truc phuong", "buitruonglinh",
+    "cukak", "chung thanh duy", "1 9 6 7", "1967", "den vau", "son tung",
+    "ho ngoc ha", "noo phuoc thinh", "bich phuong", "binz", "soobin", "justatee",
+    "phan manh quynh", "vu.", "dalab", "chillies", "ngot", " ca hoi hoang"
+)
 
-def _is_vn_track(s):
+# Bo nhan dien ky tu co dau tieng Viet chinh xac (Khong bat nham dau nhay cong hay ky hieu cua nhac Anh)
+_VN_CHAR_RE = _RE.compile(
+    r"[ăâđêôơưĂÂĐÊÔƠƯàảãáạằẳẵắặầẩẫấậèẻẽéẹềểễếệìỉĩíịòỏõóọồổỗốộờởỡớợùủũúụừửữứựỳỷỹýỵ"
+    r"ÀẢÃÁẠẰẲẴẮẶẦẨẪẤẬÈẺẼÉẸỀỂỄẾỆÌỈĨÍỊÒỎÕÓỌỒỔỖỐỘỜỞỠỚỢÙỦŨÚỤỪỬỮỨỰỲỶỸÝỴ]"
+)
+
+_REMIX_RE = _RE.compile(r"\b(remix|vinahouse|nonstop|cukak|1\s*9\s*6\s*7|dj|club\s*mix|EDM|lofi)\b", _RE.I)
+
+def _is_vn_track_strict(s):
+    if not isinstance(s, dict):
+        return False
+    tit = _UD.normalize("NFC", str(s.get("title") or s.get("name") or ""))
+    art = _UD.normalize("NFC", str(s.get("artist") or ""))
+    alb = _UD.normalize("NFC", _RE.sub(r"\[HDD\]", "", str(s.get("album") or ""), flags=_RE.I))
+    core_txt = f"{tit} {art} {alb}"
+
+    # 1. Kiem tra ky tu tieng Viet co dau chinh xac
+    if _VN_CHAR_RE.search(core_txt):
+        return True
+
+    # 2. Kiem tra ten Ca si Viet Nam khong dau
+    low_txt = _no_acc(core_txt.lower())
+    for kw in _STRICT_VN_ARTISTS:
+        if kw in low_txt:
+            return True
+
+    # 3. Kiem tra tu vung Tieng Viet khong dau (Yeu cau it nhat 2 tu thuan Viet trong ten bai/album)
+    words = [w for w in _RE.sub(r"[^a-z0-9\s]", " ", low_txt).split() if len(w) >= 2]
+    if not words:
+        return False
+    vn_hits = sum(1 for w in words if w in _STRICT_VN_WORDS)
+    return vn_hits >= 2
+
+def _is_remix_track(s):
     tit = str(s.get("title") or s.get("name") or "")
     art = str(s.get("artist") or "")
     alb = str(s.get("album") or "")
-    gen = str(s.get("genre") or "")
-    pth = str(s.get("path") or "")
-    full_raw = f"{tit} {art} {alb} {gen} {pth}"
-    if _has_acc(full_raw):
-        return True
-    f_no = _no_acc(_nfc(full_raw))
-    for kw in _VN_ARTIST_KW:
-        if kw in f_no:
-            return True
-    words = [w for w in _RE.sub(r"[^a-z0-9\s]", " ", f_no).split() if len(w) >= 2]
-    vn_hits = sum(1 for w in words if w in _VN_TOKENS)
-    return vn_hits >= 2
+    return bool(_REMIX_RE.search(f"{tit} {art} {alb}"))
 
-def _folder_key(s):
-    p = str(s.get("path") or "").strip()
-    if "/" in p:
-        return "/".join(p.split("/")[:-1]).lower()
-    return ""
+def _get_all_hdd_songs():
+    global _FULL_HDD_SONGS, _FULL_HDD_TS
+    now = _TM.time()
+    if _FULL_HDD_SONGS and (now - _FULL_HDD_TS < 1800):
+        return _FULL_HDD_SONGS
+    with _FULL_HDD_LOCK:
+        if _FULL_HDD_SONGS and (now - _FULL_HDD_TS < 1800):
+            return _FULL_HDD_SONGS
+        songs_map = {}
+        if not _H_IDX:
+            _init_hdd()
+        for tg, at, _ in _H_IDX:
+            if tg in ("song", "child", "entry") and at.get("isDir") != "true":
+                sid = at.get("id", "")
+                if sid:
+                    songs_map[sid] = dict(at)
+        # Quet toan bo kho nhac Navidrome (toi da 5000 bai) de khong bo sot bat ky bai nao tren HDD
+        for off in range(0, 5000, 500):
+            try:
+                rt = _hdd_xml("/rest/search3.view", [("query", ""), ("songCount", "500"), ("songOffset", str(off)), ("albumCount", "0"), ("artistCount", "0")])
+                if rt is None or len(rt) == 0:
+                    break
+                batch = [x for x in rt[0] if x.tag in ("song", "child", "entry") and x.attrib.get("isDir") != "true"]
+                if not batch:
+                    break
+                for x in batch:
+                    sid = x.attrib.get("id", "")
+                    if sid:
+                        songs_map[sid] = dict(x.attrib)
+                if len(batch) < 500:
+                    break
+            except Exception:
+                break
+        if songs_map:
+            _FULL_HDD_SONGS = list(songs_map.values())
+            _FULL_HDD_TS = now
+        return _FULL_HDD_SONGS
 
-def _get_hdd_similar_songs(seed_id, count=30):
-    if not _H_IDX:
-        _init_hdd()
-    all_hdd = [dict(at) for tg, at, _ in _H_IDX if tg in ("song", "child", "entry") and at.get("isDir") != "true"]
+def _fetch_single_hdd_meta(seed_id):
+    raw_s = _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(seed_id or "").strip())
+    if not raw_s:
+        return None
+    for ep in ("/rest/getSong.view", "/rest/getAlbum.view"):
+        try:
+            rt = _hdd_xml(ep, [("id", raw_s)])
+            if rt is not None and len(rt) > 0:
+                if rt[0].tag in ("song", "child", "entry"):
+                    return dict(rt[0].attrib)
+                for x in rt[0]:
+                    if x.tag in ("song", "child", "entry") and x.attrib.get("isDir") != "true":
+                        return dict(x.attrib)
+        except Exception:
+            pass
+    return None
+
+def _get_hdd_similar_songs(seed_id, count=30, seed_meta=None):
+    all_hdd = _get_all_hdd_songs()
     if not all_hdd:
         return []
 
     raw_s = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-|ar-)+", "", str(seed_id or "").strip())
-    now = _TM.time()
-    if raw_s and raw_s in _HDD_SIM_CACHE and _HDD_SIM_CACHE[raw_s][1] > now:
-        cached_list = list(_HDD_SIM_CACHE[raw_s][0])
-        return cached_list[:count]
+    seed_song = dict(seed_meta) if (isinstance(seed_meta, dict) and (seed_meta.get("title") or seed_meta.get("artist"))) else None
 
-    seed_song = None
-    for s in all_hdd:
-        sid_c = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(s.get("id", "")))
-        alid_c = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(s.get("albumId") or s.get("parent") or ""))
-        arid_c = _RE.sub(r"^(hdd\d*_|hdd_|ar-)+", "", str(s.get("artistId") or ""))
-        if raw_s and raw_s in (sid_c, alid_c, arid_c):
-            seed_song = s
-            break
+    if not seed_song and raw_s:
+        for s in all_hdd:
+            sid_c = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(s.get("id", "")))
+            alid_c = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(s.get("albumId") or s.get("parent") or ""))
+            if raw_s in (sid_c, alid_c):
+                seed_song = dict(s)
+                break
+
+    if not seed_song and raw_s:
+        seed_song = _fetch_single_hdd_meta(seed_id)
 
     if not seed_song:
-        seed_song = all_hdd[0]
+        return []
 
-    seed_sid = seed_song.get("id", "")
+    seed_sid = str(seed_song.get("id") or seed_id or "")
     seed_tit = str(seed_song.get("title") or seed_song.get("name") or "")
     seed_art = str(seed_song.get("artist") or "")
     seed_alb = str(seed_song.get("album") or "")
     seed_gen = _no_acc(_nfc(seed_song.get("genre") or ""))
-    seed_fld = _folder_key(seed_song)
-    seed_is_vn = _is_vn_track(seed_song)
+    seed_is_vn = _is_vn_track_strict(seed_song)
+    seed_is_rmx = _is_remix_track(seed_song)
 
-    # 1. Hoi nhanh YouTube Music Automix de lay danh sach Ca si & Bai hat cung dong nhac voi bai HDD nay
+    ckey = f"{'vn' if seed_is_vn else 'intl'}_{'rmx' if seed_is_rmx else 'std'}_{_no_acc(_nfc(seed_art))}_{_no_acc(_nfc(seed_tit))}"
+    now = _TM.time()
+    if ckey in _HDD_SIM_CACHE and _HDD_SIM_CACHE[ckey][1] > now:
+        cached = list(_HDD_SIM_CACHE[ckey][0])
+        _RND.shuffle(cached)
+        return cached[:count]
+
+    # Hoi nhanh YouTube Music de lay danh sach Ca si cung phong cach voi bai dang phat
     ytm_rel_artists = set()
-    ytm_rel_titles = set()
     try:
         q_ytm = f"{_clean_artist_name(seed_art)} {seed_tit}".strip()
-        s_matches = _ytm_search_items(q_ytm, "EgWKAQIIAWoKEAkQBRAKEAMQBA==", False)
-        if s_matches:
-            vid0 = s_matches[0]["id"]
-            rel_yt = _ytm_automix_related(vid0, seed_art)
-            for ry in (s_matches[:3] + rel_yt):
-                ra = _no_acc(_nfc(_clean_artist_name(ry.get("artist", ""))))
-                rt = _no_acc(_nfc(ry.get("title", "")))
-                if len(ra) >= 3:
-                    ytm_rel_artists.add(ra)
-                if len(rt) >= 4:
-                    ytm_rel_titles.add(rt)
+        if q_ytm:
+            s_matches = _ytm_search_items(q_ytm, "EgWKAQIIAWoKEAkQBRAKEAMQBA==", False)
+            if s_matches:
+                vid0 = s_matches[0]["id"]
+                rel_yt = _ytm_automix_related(vid0, seed_art)
+                for ry in (s_matches[:3] + rel_yt):
+                    ra = _no_acc(_nfc(_clean_artist_name(ry.get("artist", ""))))
+                    if len(ra) >= 3:
+                        ytm_rel_artists.add(ra)
     except Exception:
         pass
 
-    # 2. Cham diem toan bo kho HDD theo 6 tang uu tien + Khoa chat Ngon Ngu (Viet ra Viet, Anh ra Anh)
-    t_same_alb = []      # Tang 1: Cung Album / Cung Thu muc tren HDD
-    t_same_art = []      # Tang 2: Cung Ca si tren HDD
-    t_ytm_match = []     # Tang 3: Ca si / Bai hat trong HDD duoc YouTube Music goi y la cung dong nhac
-    t_same_gen = []      # Tang 4: Cung The loai (Genre) & Cung Ngon ngu tren HDD
-    t_same_lang = []     # Tang 5: Cung Ngon ngu (Nhac Viet hoac Nhac Ngoai) tren HDD
-    t_fallback = []      # Tang 6: Du phong cuoi cung neu kho nhac qua it bai
+    t_same_art = []      # 1. Cung ca si tren HDD
+    t_ytm_art = []       # 2. Ca si tuong dong theo goi y cua YouTube Music tren HDD
+    t_same_style = []    # 3. Cung dong nhac (Bolero/Tru tinh vs Remix/Pop/Rock) & cung ngon ngu tren HDD
+    t_same_lang = []     # 4. Cung ngon ngu (Viet ra Viet, Anh ra Anh) tren HDD
+
+    seed_art_parts = [p.strip() for p in _RE.split(r"[,&/]|va\b|feat\.?|ft\.?", _no_acc(_nfc(seed_art))) if len(p.strip()) >= 3]
 
     for s in all_hdd:
-        sid = s.get("id", "")
+        sid = str(s.get("id") or "")
         if not sid or sid == seed_sid:
             continue
-        s_is_vn = _is_vn_track(s)
+        if seed_tit and _no_acc(_nfc(s.get("title") or "")) == _no_acc(_nfc(seed_tit)) and _is_same_artist(seed_art, s.get("artist", ""), False):
+            continue
+
+        s_is_vn = _is_vn_track_strict(s)
+        # KHOA NGON NGU TUYET DOI: Nhac Viet chi di voi Nhac Viet, Nhac Anh chi di voi Nhac Anh!
+        if s_is_vn != seed_is_vn:
+            continue
+
+        s_is_rmx = _is_remix_track(s)
         s_art = str(s.get("artist") or "")
         s_art_no = _no_acc(_nfc(_clean_artist_name(s_art)))
-        s_tit_no = _no_acc(_nfc(s.get("title") or s.get("name") or ""))
-        s_alb = str(s.get("album") or "")
         s_gen = _no_acc(_nfc(s.get("genre") or ""))
-        s_fld = _folder_key(s)
 
-        # Uu tien 1: Cung ca si (luon dung phong cach)
-        if seed_art and _is_same_artist(seed_art, s_art, False):
+        # 1. Kiem tra cung Ca si (Ho tro ca album song ca nhu Che Linh & Huong Lan)
+        if (seed_art and _is_same_artist(seed_art, s_art, False)) or (s_art_no and any(p in s_art_no for p in seed_art_parts)):
             t_same_art.append(s)
             continue
 
-        # Uu tien 2: Cung Album hoac cung Thu muc va cung ngon ngu
-        if s_is_vn == seed_is_vn and ((seed_alb and s_alb == seed_alb) or (seed_fld and s_fld == seed_fld)):
-            t_same_alb.append(s)
+        # 2. Tach biet nhac Bolero/Tru tinh voi nhac Remix/Vinahouse
+        if s_is_rmx != seed_is_rmx:
+            t_same_lang.append(s)
             continue
 
-        # Khoa ngon ngu: Neu dang nghe Nhac Viet thi tuyet doi bo qua Nhac Anh/Ngoai (va nguoc lai)
-        if s_is_vn != seed_is_vn:
-            t_fallback.append(s)
-            continue
-
-        # Uu tien 3: Ca si hoac bai hat trong HDD trung khop voi danh sach Automix cua YouTube Music
-        matched_ytm = False
+        # 3. Kiem tra trung Ca si tuong dong tu YouTube Music Automix
         if s_art_no and any((ra in s_art_no or s_art_no in ra) for ra in ytm_rel_artists if len(ra) >= 4):
-            matched_ytm = True
-        elif s_tit_no and any((rt == s_tit_no) for rt in ytm_rel_titles):
-            matched_ytm = True
-        elif seed_is_vn and any(kw in _no_acc(_nfc(seed_art)) for kw in _VN_ARTIST_KW) and any(kw in s_art_no for kw in _VN_ARTIST_KW):
-            matched_ytm = True
+            t_ytm_art.append(s)
+            continue
 
-        if matched_ytm:
-            t_ytm_match.append(s)
+        # 4. Kiem tra cung The loai hoac cung nhom Ca si Nhac Vang / Bolero
+        if seed_is_vn and not seed_is_rmx and any(kw in s_art_no for kw in _STRICT_VN_ARTISTS[:45]):
+            t_same_style.append(s)
         elif seed_gen and seed_gen not in ("other", "unknown", "") and s_gen == seed_gen:
-            t_same_gen.append(s)
+            t_same_style.append(s)
         else:
             t_same_lang.append(s)
 
-    for bucket in (t_same_alb, t_same_art, t_ytm_match, t_same_gen, t_same_lang, t_fallback):
-        _RND.shuffle(bucket)
+    for b in (t_same_art, t_ytm_art, t_same_style, t_same_lang):
+        _RND.shuffle(b)
 
-    # Xen ke muot ma giua cung Ca si, cung Album va cac Ca si cung dong nhac (YTM Match)
-    prioritized = t_same_art[:8] + t_same_alb[:6] + t_ytm_match + t_same_art[8:] + t_same_alb[6:] + t_same_gen + t_same_lang
-    if len(prioritized) < count:
-        prioritized.extend(t_fallback)
-
+    prioritized = t_same_art[:10] + t_ytm_art + t_same_style + t_same_art[10:] + t_same_lang
     out, seen = [], {seed_sid}
     for s in prioritized:
         sid = s.get("id", "")
         if sid and sid not in seen:
             seen.add(sid)
             out.append(dict(s))
-            if len(out) >= 40:
+            if len(out) >= 45:
                 break
 
-    if raw_s and out:
-        _HDD_SIM_CACHE[raw_s] = (out, now + 900)
+    if out:
+        _HDD_SIM_CACHE[ckey] = (out, now + 900)
     return out[:count]
 
 def _build_endless_hdd_album(p, qi, rid):
@@ -4137,21 +4209,16 @@ def _build_endless_hdd_album(p, qi, rid):
     ch_tg = "child" if "directory" in p.lower() else "song"
     orig_songs = [x for x in al_el if x.tag in ("song", "child", "entry") and x.attrib.get("isDir") != "true"]
 
-    # Loc bo cac bai ngoai lai khac ngon ngu neu nam chung trong 1 thu muc hon hop tren HDD
-    if orig_songs:
-        first_dict = dict(orig_songs[0].attrib)
-        first_vn = _is_vn_track(first_dict)
-        filtered_orig = [x for x in orig_songs if _is_vn_track(x.attrib) == first_vn]
-        if filtered_orig:
-            for x in list(al_el):
-                if x.tag in ("song", "child", "entry") and x not in filtered_orig:
-                    al_el.remove(x)
-            orig_songs = filtered_orig
+    seed_meta = dict(orig_songs[0].attrib) if orig_songs else dict(al_el.attrib)
+    if not seed_meta.get("artist") and al_el.attrib.get("artist"):
+        seed_meta["artist"] = al_el.attrib.get("artist")
+    if not seed_meta.get("album") and (al_el.attrib.get("name") or al_el.attrib.get("title")):
+        seed_meta["album"] = al_el.attrib.get("name") or al_el.attrib.get("title")
+
+    seed_id = seed_meta.get("id") or rid
+    sim_hdd = _get_hdd_similar_songs(seed_id, 28, seed_meta=seed_meta)
 
     seen_ids = {x.attrib.get("id", "") for x in orig_songs}
-    seed_id = orig_songs[0].attrib.get("id") if orig_songs else rid
-    sim_hdd = _get_hdd_similar_songs(seed_id, 28)
-
     next_trk = len(orig_songs) + 1
     for s in sim_hdd:
         sid = s.get("id", "")
@@ -4164,4 +4231,5 @@ def _build_endless_hdd_album(p, qi, rid):
     al_el.attrib["songCount"] = str(next_trk - 1)
     return hrt
 
+_TH.Thread(target=_get_all_hdd_songs, daemon=True).start()
 _SCACHE.clear()
