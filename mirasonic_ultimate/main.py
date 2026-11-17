@@ -3366,73 +3366,42 @@ async def _k11_mw(req, call_next):
 
 _SCACHE.clear()
 
-# --- K12: V1.4.9 NATIVE M4A (AAC BIT-PERFECT) STREAMING WITH SIDX INDEX SEEKING ---
-import struct as _ST
-
-_M4A_JOBS = {}
+# --- K12: V1.5.1 ULTRA-HD MP3 CBR 320KBPS (UNIVERSAL EDIFIER DLNA + SEEK BAR) ---
+_MP3_320_JOBS = {}
 _YT_DIRECT_URL = {}
 
-def _parse_sidx_exact_size(head_b):
-    pos = 0
-    n = len(head_b)
-    while pos + 8 <= n:
-        try:
-            box_sz, box_type = _ST.unpack(">I4s", head_b[pos:pos+8])
-        except Exception:
-            break
-        if box_sz < 8:
-            break
-        if box_type == b"sidx" and pos + box_sz <= n:
-            try:
-                ver = head_b[pos + 8]
-                off = pos + 20
-                if ver == 0:
-                    _, first_off = _ST.unpack(">II", head_b[off:off+8])
-                    off += 8
-                else:
-                    _, first_off = _ST.unpack(">QQ", head_b[off:off+16])
-                    off += 16
-                _, ref_cnt = _ST.unpack(">HH", head_b[off:off+4])
-                off += 4
-                total_ref = 0
-                for _ in range(ref_cnt):
-                    if off + 12 > pos + box_sz:
-                        break
-                    rw, _, _ = _ST.unpack(">III", head_b[off:off+12])
-                    total_ref += (rw & 0x7FFFFFFF)
-                    off += 12
-                if total_ref > 0:
-                    return (pos + box_sz) + first_off + total_ref
-            except Exception:
-                pass
-        pos += box_sz
-    return 0
-
+# Chuyen toan bo bai hat YouTube trong bo nho sang MP3 320kbps (40.000 bytes/giay) de loa Edifier MS50A & Seek Bar chay 100%
 for _vid_k, _s_obj in list(_YL.items()):
     if isinstance(_s_obj, dict) and not str(_vid_k).startswith("hdd"):
-        _s_obj["suffix"] = "m4a"
-        _s_obj["contentType"] = "audio/mp4"
+        _s_obj["suffix"] = "mp3"
+        _s_obj["contentType"] = "audio/mpeg"
+        _s_obj["bitRate"] = "320"
         _s_obj.pop("transcodedSuffix", None)
         _s_obj.pop("transcodedContentType", None)
         _d_s = int(_s_obj.get("duration") or 240) if str(_s_obj.get("duration","")).isdigit() else 240
-        _m4p = _OS.path.join(_AUD_DIR, f"{_vid_k}.m4a")
-        _s_obj["size"] = str(_OS.path.getsize(_m4p)) if (_OS.path.exists(_m4p) and _OS.path.getsize(_m4p) > 32768) else str(_d_s * 16000)
+        _mp3p = _OS.path.join(_AUD_DIR, f"{_vid_k}_320.mp3")
+        _s_obj["size"] = str(_OS.path.getsize(_mp3p)) if (_OS.path.exists(_mp3p) and _OS.path.getsize(_mp3p) > 65536) else str(_d_s * 40000)
         if "path" in _s_obj:
-            _s_obj["path"] = _RE.sub(r"\.(aac|mp3)$", ".m4a", str(_s_obj["path"]))
+            _s_obj["path"] = _RE.sub(r"\.(aac|m4a|mp3)$", ".mp3", str(_s_obj["path"]))
+try:
+    _save_meta()
+except Exception:
+    pass
 
 _orig_make_song_k11 = _make_song
 def _make_song(vid, tit, art, alb="", dur="240", is_vid=False, thumb_url=""):
     s = _orig_make_song_k11(vid, tit, art, alb, dur, is_vid, thumb_url)
     if s:
         d_int = int(s.get("duration") or 240) if str(s.get("duration","")).isdigit() else 240
-        mp = _OS.path.join(_AUD_DIR, f"{vid}.m4a")
-        f_sz = str(_OS.path.getsize(mp)) if (_OS.path.exists(mp) and _OS.path.getsize(mp) > 32768) else str(d_int * 16000)
-        s["suffix"] = "m4a"
-        s["contentType"] = "audio/mp4"
+        mp = _OS.path.join(_AUD_DIR, f"{vid}_320.mp3")
+        f_sz = str(_OS.path.getsize(mp)) if (_OS.path.exists(mp) and _OS.path.getsize(mp) > 65536) else str(d_int * 40000)
+        s["suffix"] = "mp3"
+        s["contentType"] = "audio/mpeg"
+        s["bitRate"] = "320"
         s.pop("transcodedSuffix", None)
         s.pop("transcodedContentType", None)
         s["size"] = f_sz
-        s["path"] = f"{s.get('artist','YouTube')}/{s.get('album',tit)}/{tit}.m4a"
+        s["path"] = f"{s.get('artist','YouTube')}/{s.get('album',tit)}/{tit}.mp3"
         _YL[vid] = s
     return s
 
@@ -3441,20 +3410,20 @@ def _fmt(rt, js, cb=None):
     for x in rt.iter():
         a = x.attrib
         if x.tag in ("song", "child", "entry") and a.get("isDir") != "true" and not str(a.get("id", "")).startswith("hdd"):
-            a["suffix"] = "m4a"
-            a["contentType"] = "audio/mp4"
-            a["bitRate"] = "256"
+            a["suffix"] = "mp3"
+            a["contentType"] = "audio/mpeg"
+            a["bitRate"] = "320"
             a.pop("transcodedSuffix", None)
             a.pop("transcodedContentType", None)
             d_v = int(a.get("duration") or 240) if str(a.get("duration", "")).isdigit() else 240
             vid_c = _RE.sub(r"^(yt\d*_|al_)+", "", str(a.get("id") or ""))
-            mp = _OS.path.join(_AUD_DIR, f"{vid_c}.m4a")
-            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 32768:
+            mp = _OS.path.join(_AUD_DIR, f"{vid_c}_320.mp3")
+            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536:
                 a["size"] = str(_OS.path.getsize(mp))
             else:
-                a["size"] = str(max(d_v * 16000, 65536))
+                a["size"] = str(max(d_v * 40000, 160000))
             if "path" in a:
-                a["path"] = _RE.sub(r"\.(aac|mp3)$", ".m4a", str(a["path"]))
+                a["path"] = _RE.sub(r"\.(aac|m4a|mp3)$", ".mp3", str(a["path"]))
     return _orig_fmt_k11(rt, js, cb)
 
 def _get_direct_yt_url(vid):
@@ -3462,7 +3431,7 @@ def _get_direct_yt_url(vid):
     if vid in _YT_DIRECT_URL and _YT_DIRECT_URL[vid][1] > now:
         return _YT_DIRECT_URL[vid][0]
     try:
-        c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "-f", "140/bestaudio[ext=m4a]/bestaudio", "-g", f"https://www.youtube.com/watch?v={vid}"]
+        c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "-f", "251/140/bestaudio/best", "-g", f"https://www.youtube.com/watch?v={vid}"]
         u = _SP.check_output(c, timeout=6).decode("utf-8", "ignore").strip().splitlines()[0]
         if u.startswith("http"):
             _YT_DIRECT_URL[vid] = (u, now + 10800)
@@ -3471,54 +3440,38 @@ def _get_direct_yt_url(vid):
         pass
     return ""
 
-def _ens_m4a(vid):
-    mp = _OS.path.join(_AUD_DIR, f"{vid}.m4a")
+def _ens_mp3_320(vid):
+    mp = _OS.path.join(_AUD_DIR, f"{vid}_320.mp3")
     dur_v = int((_YL.get(vid) or {}).get("duration") or 240) if str((_YL.get(vid) or {}).get("duration","")).isdigit() else 240
-    est_sz = max(dur_v * 16000, 65536)
+    est_sz = max(dur_v * 40000, 160000)
 
-    if _OS.path.exists(mp) and _OS.path.getsize(mp) > 32768 and (vid not in _M4A_JOBS or _M4A_JOBS[vid]["d"]):
+    if _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536 and (vid not in _MP3_320_JOBS or _MP3_320_JOBS[vid]["d"]):
         real_sz = _OS.path.getsize(mp)
         if vid in _YL:
             _YL[vid]["size"] = str(real_sz)
         return {"p": mp, "d": True, "total_sz": real_sz}
 
-    if vid in _M4A_JOBS and not _M4A_JOBS[vid]["d"]:
-        return _M4A_JOBS[vid]
+    if vid in _MP3_320_JOBS and not _MP3_320_JOBS[vid]["d"]:
+        return _MP3_320_JOBS[vid]
 
-    j = {"p": mp, "d": False, "total_sz": est_sz, "sidx_parsed": False}
-    _M4A_JOBS[vid] = j
+    j = {"p": mp, "d": False, "total_sz": est_sz}
+    _MP3_320_JOBS[vid] = j
     _DL_POOL.submit(_get_direct_yt_url, vid)
 
     def _run():
         try:
-            # Lay thang luong M4A (itag=140) nguyen ban tu YouTube, giu nguyen hop moov + sidx o dau file, 0% CPU re-encode!
-            c1 = [
-                "yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate",
-                "--concurrent-fragments", "4", "-f", "140/bestaudio[ext=m4a]",
-                "--fixup", "never", "-o", "-", f"https://www.youtube.com/watch?v={vid}"
+            c1 = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "--concurrent-fragments", "4", "-f", "251/140/bestaudio/best", "-o", "-", f"https://www.youtube.com/watch?v={vid}"]
+            c2 = [
+                "ffmpeg", "-y", "-loglevel", "error", "-threads", "4",
+                "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100",
+                "-c:a", "libmp3lame", "-b:a", "320k", "-q:a", "0",
+                "-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", mp
             ]
             p1 = _SP.Popen(c1, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
-            written = 0
-            head_buf = bytearray()
-            with open(mp, "wb") as f_out:
-                while True:
-                    chunk = p1.stdout.read(65536)
-                    if not chunk:
-                        break
-                    f_out.write(chunk)
-                    f_out.flush()
-                    written += len(chunk)
-                    if not j["sidx_parsed"] and len(head_buf) < 32768:
-                        head_buf.extend(chunk[:32768 - len(head_buf)])
-                        if len(head_buf) >= 4096:
-                            exact_s = _parse_sidx_exact_size(bytes(head_buf))
-                            if exact_s > 32768:
-                                j["total_sz"] = exact_s
-                                j["sidx_parsed"] = True
-                                if vid in _YL:
-                                    _YL[vid]["size"] = str(exact_s)
-            p1.wait(timeout=3600)
-            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 32768:
+            p2 = _SP.Popen(c2, stdin=p1.stdout, stdout=_SP.DEVNULL, stderr=_SP.DEVNULL)
+            p1.stdout.close()
+            p2.communicate(timeout=3600)
+            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536:
                 j["total_sz"] = _OS.path.getsize(mp)
                 if vid in _YL:
                     _YL[vid]["size"] = str(j["total_sz"])
@@ -3553,6 +3506,12 @@ async def _k12_seek_mw(req, call_next):
     _record_yt_play(vid, False)
     _DL_POOL.submit(_get_art_600, sid)
 
+    t_off = 0
+    for tk in ("timeOffset", "timeoffset", "offset"):
+        if str(qd.get(tk, "")).isdigit() and int(qd[tk]) > 0:
+            t_off = int(qd[tk])
+            break
+
     rng = req.headers.get("range") or req.headers.get("Range") or ""
     st_b = 0
     end_b = None
@@ -3567,35 +3526,28 @@ async def _k12_seek_mw(req, call_next):
         except Exception:
             st_b = 0
 
-    j = _ens_m4a(vid)
-    # Doi hop moov + sidx (32KB dau tien) nap xong de biet chinh xac 100% kich thuoc byte cua file M4A
+    if t_off > 0 and st_b == 0:
+        st_b = t_off * 40000
+        has_range = True
+
+    j = _ens_mp3_320(vid)
     for _ in range(55):
-        if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 32768) or j["d"]:
+        if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 65536) or j["d"]:
             break
-        await _A.sleep(0.06)
+        await _A.sleep(0.08)
 
     cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
-    if cur_sz >= 4096 and not j.get("sidx_parsed"):
-        try:
-            with open(j["p"], "rb") as fh:
-                ex_s = _parse_sidx_exact_size(fh.read(32768))
-                if ex_s > 32768:
-                    j["total_sz"] = ex_s
-                    j["sidx_parsed"] = True
-        except Exception:
-            pass
-
     if st_b > 0 and not j["d"] and cur_sz < st_b + 65536:
-        for _ in range(12):
+        for _ in range(15):
             cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
             if cur_sz >= st_b + 65536 or j["d"]:
                 break
-            await _A.sleep(0.06)
+            await _A.sleep(0.08)
 
     cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
-    total_sz = cur_sz if (j["d"] and cur_sz > 32768) else max(j.get("total_sz", 3840000), cur_sz)
+    total_sz = cur_sz if (j["d"] and cur_sz > 65536) else max(j.get("total_sz", 9600000), cur_sz + 65536)
     if st_b >= total_sz:
-        st_b = max(0, total_sz - 32768)
+        st_b = max(0, total_sz - 65536)
     real_end = min(end_b, total_sz - 1) if (end_b is not None and end_b < total_sz) else (total_sz - 1)
     content_len = max(0, real_end - st_b + 1)
 
@@ -3603,37 +3555,51 @@ async def _k12_seek_mw(req, call_next):
         **_CORS,
         "Accept-Ranges": "bytes",
         "Content-Length": str(content_len),
-        "Cache-Control": "no-cache"
+        "Cache-Control": "no-cache",
+        "transferMode.dlna.org": "Streaming",
+        "contentFeatures.dlna.org": "DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
     }
     if has_range:
         hdrs["Content-Range"] = f"bytes {st_b}-{real_end}/{total_sz}"
     st_code = 206 if has_range else 200
 
     if req.method == "HEAD":
-        return _R(content=b"", status_code=st_code, media_type="audio/mp4", headers=hdrs)
+        return _R(content=b"", status_code=st_code, media_type="audio/mpeg", headers=hdrs)
 
-    # 1. Neu nguoi dung keo tua vuot qua phan file dang tai -> Lay truc tiep dai Byte M4A do tu YouTube (0% CPU, khop tung byte voi bang sidx!)
+    # 1. Neu tua xa vuot qua phan file dang tai -> Dung ffmpeg -ss nhay thang toi giay do voi 320kbps!
     if st_b > 0 and not j["d"] and cur_sz < st_b + 32768:
-        async def _direct_m4a_range_proxy(start_pos, end_pos, max_bytes):
+        seek_sec = t_off if t_off > 0 else (st_b / 40000.0)
+        async def _ffmpeg_seek_stream(sec, max_bytes):
             sent = 0
             u_out = await lp.run_in_executor(_DL_POOL, _get_direct_yt_url, vid)
             if u_out:
+                c2 = [
+                    "ffmpeg", "-loglevel", "error", "-ss", f"{sec:.2f}",
+                    "-i", u_out, "-vn", "-ac", "2", "-ar", "44100",
+                    "-c:a", "libmp3lame", "-b:a", "320k", "-q:a", "0",
+                    "-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", "pipe:1"
+                ]
+                p2 = _SP.Popen(c2, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
                 try:
-                    req_yt = _U.Request(u_out, headers={"User-Agent": "Mozilla/5.0", "Range": f"bytes={start_pos}-{end_pos}"})
-                    with _U.urlopen(req_yt, timeout=8, context=_CTX) as r_yt:
-                        while sent < max_bytes:
-                            to_r = min(65536, max_bytes - sent)
-                            chunk = await lp.run_in_executor(_REQ_POOL, r_yt.read, to_r)
-                            if not chunk:
-                                break
-                            yield chunk
-                            sent += len(chunk)
-                except Exception:
-                    pass
-        return _SR(_direct_m4a_range_proxy(st_b, real_end, content_len), status_code=st_code, media_type="audio/mp4", headers=hdrs)
+                    while sent < max_bytes:
+                        to_r = min(32768, max_bytes - sent)
+                        chunk = await lp.run_in_executor(_REQ_POOL, p2.stdout.read, to_r)
+                        if not chunk:
+                            break
+                        yield chunk
+                        sent += len(chunk)
+                finally:
+                    try: p2.kill()
+                    except Exception: pass
+            while sent < max_bytes:
+                pad = min(32768, max_bytes - sent)
+                yield b"\x00" * pad
+                sent += pad
 
-    # 2. Phat va Tua truc tiep tren file M4A nguyen ban
-    async def _m4a_file_stream(start_pos, max_bytes):
+        return _SR(_ffmpeg_seek_stream(seek_sec, content_len), status_code=st_code, media_type="audio/mpeg", headers=hdrs)
+
+    # 2. Phat va Tua truc tiep tren file MP3 320kbps CBR
+    async def _mp3_file_stream(start_pos, max_bytes):
         sent = 0
         if _OS.path.exists(j["p"]):
             with open(j["p"], "rb") as f:
@@ -3648,9 +3614,13 @@ async def _k12_seek_mw(req, call_next):
                     elif j["d"]:
                         break
                     else:
-                        await _A.sleep(0.04)
+                        await _A.sleep(0.05)
+        while sent < max_bytes:
+            pad = min(65536, max_bytes - sent)
+            yield b"\x00" * pad
+            sent += pad
 
-    return _SR(_m4a_file_stream(st_b, content_len), status_code=st_code, media_type="audio/mp4", headers=hdrs)
+    return _SR(_mp3_file_stream(st_b, content_len), status_code=st_code, media_type="audio/mpeg", headers=hdrs)
 
 _SCACHE.clear()
 
