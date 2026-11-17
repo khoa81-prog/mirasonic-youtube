@@ -3368,65 +3368,23 @@ async def _k11_mw_disabled(req, call_next):
 
 _SCACHE.clear()
 
-# --- K12: V1.5.3 DUAL-ENGINE SMART ROUTER (NATIVE M4A FOR PHONE/CAR + AUTO MP3 FOR CAST/DLNA) ---
-import struct as _ST
-
-_M4A_JOBS = {}
+# --- K12: V1.6.0 TRUE 256KBPS M4A (OPUS 251 MASTER -> 256K AAC) + AUTO MP3 CAST ---
+_M4A_256_JOBS = {}
 _MP3_JOBS = {}
 _YT_DIRECT_URL = {}
 
-def _parse_sidx_exact_size(head_b):
-    pos = 0
-    n = len(head_b)
-    while pos + 8 <= n:
-        try:
-            box_sz, box_type = _ST.unpack(">I4s", head_b[pos:pos+8])
-        except Exception:
-            break
-        if box_sz < 8:
-            break
-        if box_type == b"sidx" and pos + box_sz <= n:
-            try:
-                ver = head_b[pos + 8]
-                off = pos + 20
-                if ver == 0:
-                    _, first_off = _ST.unpack(">II", head_b[off:off+8])
-                    off += 8
-                else:
-                    _, first_off = _ST.unpack(">QQ", head_b[off:off+16])
-                    off += 16
-                _, ref_cnt = _ST.unpack(">HH", head_b[off:off+4])
-                off += 4
-                total_ref = 0
-                for _ in range(ref_cnt):
-                    if off + 12 > pos + box_sz:
-                        break
-                    rw, _, _ = _ST.unpack(">III", head_b[off:off+12])
-                    total_ref += (rw & 0x7FFFFFFF)
-                    off += 12
-                if total_ref > 0:
-                    return (pos + box_sz) + first_off + total_ref
-            except Exception:
-                pass
-        pos += box_sz
-    return 0
-
 def _is_cast_or_dlna_client(req, qd):
-    # 1. Kiem tra tham so format=mp3 tren URL (khi App chu dong yeu cau MP3 cho thiet bi Cast)
     fmt_q = str(qd.get("format") or "").strip().lower()
     if fmt_q in ("mp3", "mpeg", "audio/mpeg"):
         return True
     if fmt_q in ("m4a", "aac", "mp4", "raw"):
         return False
 
-    # 2. Kiem tra DLNA / UPnP / Cast HTTP Headers do Loa Edifier MS50A & TV gui len
     hdr_keys = {k.lower() for k in req.headers.keys()}
-    if any(k in hdr_keys for k in ("getcontentfeatures.dlna.org", "transfermode.dlna.org", "getmediaInfo.sec", "cast-device-capabilities", "icy-metadata")):
+    if any(k in hdr_keys for k in ("getcontentfeatures.dlna.org", "transfermode.dlna.org", "getmediainfo.sec", "cast-device-capabilities", "icy-metadata")):
         return True
 
-    # 3. Nhan dien User-Agent: Phân biet Điện thoại/Xe BYD (Native M4A) vs Loa Edifier/TV/Chromecast (Auto MP3)
     ua = req.headers.get("user-agent", "").lower()
-    # Dac trung cua Loa Edifier MS50A (Linkplay/Wiimu/AVTransport/UPnP/DLNA/GStreamer/FFmpeg/Lavf/MPG123/VLC/CrKey)
     cast_kw = (
         "upnp", "dlna", "edifier", "wiimu", "linkplay", "sonos", "heos",
         "render", "avtransport", "mediaplayer", "gstreamer", "lavf", "ffmpeg",
@@ -3436,7 +3394,6 @@ def _is_cast_or_dlna_client(req, qd):
     if any(k in ua for k in cast_kw):
         return True
 
-    # Dac trung cua App tren Dien thoai va Man hinh Xe BYD -> Luon dung M4A nguyen ban!
     app_kw = (
         "symfonium", "yuzic", "wavio", "ultrasonic", "substreamer", "tempo",
         "amperfy", "play:sub", "dsub", "resonus", "musly", "substars",
@@ -3445,12 +3402,9 @@ def _is_cast_or_dlna_client(req, qd):
     )
     if any(k in ua for k in app_kw):
         return False
-
-    # Neu User-Agent rong hoac la trinh nhung Linux co dien cua loa thong minh -> Chuyen sang MP3 cho an toan tuyet doi
     return True
 
-# Mac dinh khai bao M4A (AAC nguyen ban) trong danh sach bai hat cho Dien thoai & Xe BYD,
-# dong thoi gan nhan transcodedSuffix="mp3" de cac trinh dieu khien DLNA/UPnP biet may chu ho tro MP3 khi Cast!
+# Khai bao chuan M4A 256kbps (32.000 bytes/giay) khop 100% giua Metadata va Ruot file de Wavio luon hien ORIGINAL!
 for _vid_k, _s_obj in list(_YL.items()):
     if isinstance(_s_obj, dict) and not str(_vid_k).startswith("hdd"):
         _s_obj["suffix"] = "m4a"
@@ -3459,8 +3413,8 @@ for _vid_k, _s_obj in list(_YL.items()):
         _s_obj.pop("transcodedSuffix", None)
         _s_obj.pop("transcodedContentType", None)
         _d_s = int(_s_obj.get("duration") or 240) if str(_s_obj.get("duration","")).isdigit() else 240
-        _m4p = _OS.path.join(_AUD_DIR, f"{_vid_k}.m4a")
-        _s_obj["size"] = str(_OS.path.getsize(_m4p)) if (_OS.path.exists(_m4p) and _OS.path.getsize(_m4p) > 32768) else str(_d_s * 16000)
+        _m4p = _OS.path.join(_AUD_DIR, f"{_vid_k}_256.m4a")
+        _s_obj["size"] = str(_OS.path.getsize(_m4p)) if (_OS.path.exists(_m4p) and _OS.path.getsize(_m4p) > 65536) else str(_d_s * 32000)
         if "path" in _s_obj:
             _s_obj["path"] = _RE.sub(r"\.(aac|mp3|m4a)$", ".m4a", str(_s_obj["path"]))
 try:
@@ -3473,8 +3427,8 @@ def _make_song(vid, tit, art, alb="", dur="240", is_vid=False, thumb_url=""):
     s = _orig_make_song_k11(vid, tit, art, alb, dur, is_vid, thumb_url)
     if s:
         d_int = int(s.get("duration") or 240) if str(s.get("duration","")).isdigit() else 240
-        mp = _OS.path.join(_AUD_DIR, f"{vid}.m4a")
-        f_sz = str(_OS.path.getsize(mp)) if (_OS.path.exists(mp) and _OS.path.getsize(mp) > 32768) else str(d_int * 16000)
+        mp = _OS.path.join(_AUD_DIR, f"{vid}_256.m4a")
+        f_sz = str(_OS.path.getsize(mp)) if (_OS.path.exists(mp) and _OS.path.getsize(mp) > 65536) else str(d_int * 32000)
         s["suffix"] = "m4a"
         s["contentType"] = "audio/mp4"
         s["bitRate"] = "256"
@@ -3497,77 +3451,69 @@ def _fmt(rt, js, cb=None):
             a.pop("transcodedContentType", None)
             d_v = int(a.get("duration") or 240) if str(a.get("duration", "")).isdigit() else 240
             vid_c = _RE.sub(r"^(yt\d*_|al_)+", "", str(a.get("id") or ""))
-            mp = _OS.path.join(_AUD_DIR, f"{vid_c}.m4a")
-            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 32768:
+            mp = _OS.path.join(_AUD_DIR, f"{vid_c}_256.m4a")
+            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536:
                 a["size"] = str(_OS.path.getsize(mp))
             else:
-                a["size"] = str(max(d_v * 16000, 65536))
+                a["size"] = str(max(d_v * 32000, 128000))
             if "path" in a:
                 a["path"] = _RE.sub(r"\.(aac|mp3|m4a)$", ".m4a", str(a["path"]))
     return _orig_fmt_k11(rt, js, cb)
 
-def _get_direct_yt_url(vid, prefer_m4a=True):
+def _get_direct_yt_url(vid):
     now = _TM.time()
-    ck = f"{vid}_{'m4a' if prefer_m4a else 'any'}"
-    if ck in _YT_DIRECT_URL and _YT_DIRECT_URL[ck][1] > now:
-        return _YT_DIRECT_URL[ck][0]
-    fmt_sel = "140/bestaudio[ext=m4a]/bestaudio" if prefer_m4a else "141/774/251/140/bestaudio/best"
+    if vid in _YT_DIRECT_URL and _YT_DIRECT_URL[vid][1] > now:
+        return _YT_DIRECT_URL[vid][0]
     try:
-        c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "-f", fmt_sel, "-g", f"https://www.youtube.com/watch?v={vid}"]
+        # Uu tien so 1 luong Opus 160kbps (itag=251) co dai tan rong 20kHz!
+        c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "-f", "141/774/251/140/bestaudio/best", "-g", f"https://www.youtube.com/watch?v={vid}"]
         u = _SP.check_output(c, timeout=6).decode("utf-8", "ignore").strip().splitlines()[0]
         if u.startswith("http"):
-            _YT_DIRECT_URL[ck] = (u, now + 10800)
+            _YT_DIRECT_URL[vid] = (u, now + 10800)
             return u
     except Exception:
         pass
     return ""
 
-# --- ENGINE 1: M4A (AAC BIT-PERFECT + SIDX SEEK) CHO DIEN THOAI & XE BYD ---
-def _ens_m4a(vid):
-    mp = _OS.path.join(_AUD_DIR, f"{vid}.m4a")
+# --- ENGINE 1: TRUE 256KBPS FRAGMENTED M4A (OPUS 251 -> 256K AAC + SIDX SEEK BAR) ---
+def _ens_m4a_256(vid):
+    mp = _OS.path.join(_AUD_DIR, f"{vid}_256.m4a")
     dur_v = int((_YL.get(vid) or {}).get("duration") or 240) if str((_YL.get(vid) or {}).get("duration","")).isdigit() else 240
-    est_sz = max(dur_v * 16000, 65536)
+    est_sz = max(dur_v * 32000, 128000)
 
-    if _OS.path.exists(mp) and _OS.path.getsize(mp) > 32768 and (vid not in _M4A_JOBS or _M4A_JOBS[vid]["d"]):
+    if _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536 and (vid not in _M4A_256_JOBS or _M4A_256_JOBS[vid]["d"]):
         real_sz = _OS.path.getsize(mp)
         if vid in _YL:
             _YL[vid]["size"] = str(real_sz)
-        return {"p": mp, "d": True, "total_sz": real_sz, "sidx_parsed": True}
+        return {"p": mp, "d": True, "total_sz": real_sz}
 
-    if vid in _M4A_JOBS and not _M4A_JOBS[vid]["d"]:
-        return _M4A_JOBS[vid]
+    if vid in _M4A_256_JOBS and not _M4A_256_JOBS[vid]["d"]:
+        return _M4A_256_JOBS[vid]
 
-    j = {"p": mp, "d": False, "total_sz": est_sz, "sidx_parsed": False}
-    _M4A_JOBS[vid] = j
-    _DL_POOL.submit(_get_direct_yt_url, vid, True)
+    j = {"p": mp, "d": False, "total_sz": est_sz}
+    _M4A_256_JOBS[vid] = j
+    _DL_POOL.submit(_get_direct_yt_url, vid)
 
     def _run():
         try:
             c1 = [
                 "yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate",
-                "--concurrent-fragments", "4", "-f", "140/bestaudio[ext=m4a]",
-                "--fixup", "never", "-o", "-", f"https://www.youtube.com/watch?v={vid}"
+                "--concurrent-fragments", "4", "-f", "141/774/251/140/bestaudio/best",
+                "-o", "-", f"https://www.youtube.com/watch?v={vid}"
+            ]
+            # Dong goi luong Opus 251 sang M4A AAC 256kbps CBR that su voi bang muc luc frag_keyframe+empty_moov
+            c2 = [
+                "ffmpeg", "-y", "-loglevel", "error", "-threads", "4",
+                "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100",
+                "-c:a", "aac", "-b:a", "256k",
+                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                "-frag_duration", "1000000", "-f", "ipod", mp
             ]
             p1 = _SP.Popen(c1, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
-            head_buf = bytearray()
-            with open(mp, "wb") as f_out:
-                while True:
-                    chunk = p1.stdout.read(65536)
-                    if not chunk:
-                        break
-                    f_out.write(chunk)
-                    f_out.flush()
-                    if not j["sidx_parsed"] and len(head_buf) < 32768:
-                        head_buf.extend(chunk[:32768 - len(head_buf)])
-                        if len(head_buf) >= 4096:
-                            exact_s = _parse_sidx_exact_size(bytes(head_buf))
-                            if exact_s > 32768:
-                                j["total_sz"] = exact_s
-                                j["sidx_parsed"] = True
-                                if vid in _YL:
-                                    _YL[vid]["size"] = str(exact_s)
-            p1.wait(timeout=3600)
-            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 32768:
+            p2 = _SP.Popen(c2, stdin=p1.stdout, stdout=_SP.DEVNULL, stderr=_SP.DEVNULL)
+            p1.stdout.close()
+            p2.communicate(timeout=3600)
+            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536:
                 j["total_sz"] = _OS.path.getsize(mp)
                 if vid in _YL:
                     _YL[vid]["size"] = str(j["total_sz"])
@@ -3579,10 +3525,10 @@ def _ens_m4a(vid):
     _TH.Thread(target=_run, daemon=True).start()
     return j
 
-# --- ENGINE 2: MP3 CBR 256KBPS TU DONG KHI CAST RA LOA EDIFIER MS50A / TV DLNA ---
+# --- ENGINE 2: MP3 CBR 256KBPS KHI CAST RA LOA EDIFIER MS50A / TV DLNA ---
 def _ens_mp3_cast(vid):
     mp = _OS.path.join(_AUD_DIR, f"{vid}.mp3")
-    m4p = _OS.path.join(_AUD_DIR, f"{vid}.m4a")
+    m4p = _OS.path.join(_AUD_DIR, f"{vid}_256.m4a")
     dur_v = int((_YL.get(vid) or {}).get("duration") or 240) if str((_YL.get(vid) or {}).get("duration","")).isdigit() else 240
     est_sz = max(dur_v * 32000, 128000)
 
@@ -3597,9 +3543,7 @@ def _ens_mp3_cast(vid):
 
     def _run():
         try:
-            # Sieu toc: Neu bai hat da co san file .m4a tren o cung (do vua bat tren dien thoai),
-            # dung luon file .m4a do chuyen sang MP3 cuc nhanh ma khong can tai lai tu YouTube!
-            if _OS.path.exists(m4p) and _OS.path.getsize(m4p) > 65536 and (vid not in _M4A_JOBS or _M4A_JOBS[vid]["d"]):
+            if _OS.path.exists(m4p) and _OS.path.getsize(m4p) > 65536 and (vid not in _M4A_256_JOBS or _M4A_256_JOBS[vid]["d"]):
                 c_loc = [
                     "ffmpeg", "-y", "-loglevel", "error", "-threads", "4",
                     "-i", m4p, "-vn", "-ac", "2", "-ar", "44100",
@@ -3650,7 +3594,6 @@ async def _k12_seek_mw(req, call_next):
     vid = m.group(1)
     lp = _A.get_running_loop()
     _record_yt_play(vid, False)
-    _DL_POOL.submit(_get_art_600, sid)
 
     t_off = 0
     for tk in ("timeOffset", "timeoffset", "offset"):
@@ -3672,136 +3615,33 @@ async def _k12_seek_mw(req, call_next):
         except Exception:
             st_b = 0
 
-    # PHAN LUONG THONG MINH: Kiem tra xem yeu cau den tu Loa Cast/DLNA hay tu Dien thoai/Xe BYD
+    if t_off > 0 and st_b == 0:
+        st_b = t_off * 32000
+        has_range = True
+
     is_cast = _is_cast_or_dlna_client(req, qd)
+    j = _ens_mp3_cast(vid) if is_cast else _ens_m4a_256(vid)
+    m_type = "audio/mpeg" if is_cast else "audio/mp4"
+    f_fmt = "mp3" if is_cast else "ipod"
+    f_codec = "libmp3lame" if is_cast else "aac"
 
-    # =========================================================================
-    # NHANH A: CAST / DLNA (EDIFIER MS50A, TV PHONG RIENG, CHROMECAST) -> MP3 256K
-    # =========================================================================
-    if is_cast:
-        if t_off > 0 and st_b == 0:
-            st_b = t_off * 32000
-            has_range = True
-
-        j = _ens_mp3_cast(vid)
-        for _ in range(55):
-            if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 65536) or j["d"]:
-                break
-            await _A.sleep(0.08)
-
-        cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
-        if st_b > 0 and not j["d"] and cur_sz < st_b + 65536:
-            for _ in range(15):
-                cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
-                if cur_sz >= st_b + 65536 or j["d"]:
-                    break
-                await _A.sleep(0.08)
-
-        cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
-        total_sz = cur_sz if (j["d"] and cur_sz > 65536) else max(j.get("total_sz", 7680000), cur_sz + 65536)
-        if st_b >= total_sz:
-            st_b = max(0, total_sz - 65536)
-        real_end = min(end_b, total_sz - 1) if (end_b is not None and end_b < total_sz) else (total_sz - 1)
-        content_len = max(0, real_end - st_b + 1)
-
-        hdrs = {
-            **_CORS,
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(content_len),
-            "Cache-Control": "no-cache",
-            "transferMode.dlna.org": "Streaming",
-            "contentFeatures.dlna.org": "DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
-        }
-        if has_range:
-            hdrs["Content-Range"] = f"bytes {st_b}-{real_end}/{total_sz}"
-        st_code = 206 if has_range else 200
-
-        if req.method == "HEAD":
-            return _R(content=b"", status_code=st_code, media_type="audio/mpeg", headers=hdrs)
-
-        if st_b > 0 and not j["d"] and cur_sz < st_b + 32768:
-            seek_sec = t_off if t_off > 0 else (st_b / 32000.0)
-            async def _ffmpeg_seek_stream(sec, max_bytes):
-                sent = 0
-                u_out = await lp.run_in_executor(_DL_POOL, _get_direct_yt_url, vid, False)
-                if u_out:
-                    c2 = [
-                        "ffmpeg", "-loglevel", "error", "-ss", f"{sec:.2f}",
-                        "-i", u_out, "-vn", "-ac", "2", "-ar", "44100",
-                        "-c:a", "libmp3lame", "-b:a", "256k",
-                        "-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", "pipe:1"
-                    ]
-                    p2 = _SP.Popen(c2, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
-                    try:
-                        while sent < max_bytes:
-                            to_r = min(32768, max_bytes - sent)
-                            chunk = await lp.run_in_executor(_REQ_POOL, p2.stdout.read, to_r)
-                            if not chunk:
-                                break
-                            yield chunk
-                            sent += len(chunk)
-                    finally:
-                        try: p2.kill()
-                        except Exception: pass
-                while sent < max_bytes:
-                    pad = min(32768, max_bytes - sent)
-                    yield b"\x00" * pad
-                    sent += pad
-            return _SR(_ffmpeg_seek_stream(seek_sec, content_len), status_code=st_code, media_type="audio/mpeg", headers=hdrs)
-
-        async def _mp3_file_stream(start_pos, max_bytes):
-            sent = 0
-            if _OS.path.exists(j["p"]):
-                with open(j["p"], "rb") as f:
-                    if start_pos > 0:
-                        f.seek(start_pos)
-                    while sent < max_bytes:
-                        to_read = min(65536, max_bytes - sent)
-                        c = f.read(to_read)
-                        if c:
-                            yield c
-                            sent += len(c)
-                        elif j["d"]:
-                            break
-                        else:
-                            await _A.sleep(0.05)
-            while sent < max_bytes:
-                pad = min(65536, max_bytes - sent)
-                yield b"\x00" * pad
-                sent += pad
-        return _SR(_mp3_file_stream(st_b, content_len), status_code=st_code, media_type="audio/mpeg", headers=hdrs)
-
-    # =========================================================================
-    # NHANH B: DIEN THOAI & XE BYD (DIRECT PLAY) -> NATIVE M4A (AAC BIT-PERFECT)
-    # =========================================================================
-    j = _ens_m4a(vid)
     for _ in range(55):
-        if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 32768) or j["d"]:
+        if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 65536) or j["d"]:
             break
-        await _A.sleep(0.06)
+        await _A.sleep(0.07)
 
     cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
-    if cur_sz >= 4096 and not j.get("sidx_parsed"):
-        try:
-            with open(j["p"], "rb") as fh:
-                ex_s = _parse_sidx_exact_size(fh.read(32768))
-                if ex_s > 32768:
-                    j["total_sz"] = ex_s
-                    j["sidx_parsed"] = True
-        except Exception:
-            pass
-
     if st_b > 0 and not j["d"] and cur_sz < st_b + 65536:
-        for _ in range(12):
+        for _ in range(15):
             cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
             if cur_sz >= st_b + 65536 or j["d"]:
                 break
-            await _A.sleep(0.06)
+            await _A.sleep(0.07)
 
     cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
-    total_sz = cur_sz if (j["d"] and cur_sz > 32768) else max(j.get("total_sz", 3840000), cur_sz)
+    total_sz = cur_sz if (j["d"] and cur_sz > 65536) else max(j.get("total_sz", 7680000), cur_sz + 65536)
     if st_b >= total_sz:
-        st_b = max(0, total_sz - 32768)
+        st_b = max(0, total_sz - 65536)
     real_end = min(end_b, total_sz - 1) if (end_b is not None and end_b < total_sz) else (total_sz - 1)
     content_len = max(0, real_end - st_b + 1)
 
@@ -3811,33 +3651,50 @@ async def _k12_seek_mw(req, call_next):
         "Content-Length": str(content_len),
         "Cache-Control": "no-cache"
     }
+    if is_cast:
+        hdrs["transferMode.dlna.org"] = "Streaming"
+        hdrs["contentFeatures.dlna.org"] = "DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
     if has_range:
         hdrs["Content-Range"] = f"bytes {st_b}-{real_end}/{total_sz}"
     st_code = 206 if has_range else 200
 
     if req.method == "HEAD":
-        return _R(content=b"", status_code=st_code, media_type="audio/mp4", headers=hdrs)
+        return _R(content=b"", status_code=st_code, media_type=m_type, headers=hdrs)
 
     if st_b > 0 and not j["d"] and cur_sz < st_b + 32768:
-        async def _direct_m4a_range_proxy(start_pos, end_pos, max_bytes):
+        seek_sec = t_off if t_off > 0 else (st_b / 32000.0)
+        async def _ffmpeg_seek_stream(sec, max_bytes):
             sent = 0
-            u_out = await lp.run_in_executor(_DL_POOL, _get_direct_yt_url, vid, True)
+            u_out = await lp.run_in_executor(_DL_POOL, _get_direct_yt_url, vid)
             if u_out:
+                c2 = [
+                    "ffmpeg", "-loglevel", "error", "-ss", f"{sec:.2f}",
+                    "-i", u_out, "-vn", "-ac", "2", "-ar", "44100",
+                    "-c:a", f_codec, "-b:a", "256k"
+                ]
+                if is_cast:
+                    c2.extend(["-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", "pipe:1"])
+                else:
+                    c2.extend(["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "ipod", "pipe:1"])
+                p2 = _SP.Popen(c2, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
                 try:
-                    req_yt = _U.Request(u_out, headers={"User-Agent": "Mozilla/5.0", "Range": f"bytes={start_pos}-{end_pos}"})
-                    with _U.urlopen(req_yt, timeout=8, context=_CTX) as r_yt:
-                        while sent < max_bytes:
-                            to_r = min(65536, max_bytes - sent)
-                            chunk = await lp.run_in_executor(_REQ_POOL, r_yt.read, to_r)
-                            if not chunk:
-                                break
-                            yield chunk
-                            sent += len(chunk)
-                except Exception:
-                    pass
-        return _SR(_direct_m4a_range_proxy(st_b, real_end, content_len), status_code=st_code, media_type="audio/mp4", headers=hdrs)
+                    while sent < max_bytes:
+                        to_r = min(32768, max_bytes - sent)
+                        chunk = await lp.run_in_executor(_REQ_POOL, p2.stdout.read, to_r)
+                        if not chunk:
+                            break
+                        yield chunk
+                        sent += len(chunk)
+                finally:
+                    try: p2.kill()
+                    except Exception: pass
+            while sent < max_bytes:
+                pad = min(32768, max_bytes - sent)
+                yield b"\x00" * pad
+                sent += pad
+        return _SR(_ffmpeg_seek_stream(seek_sec, content_len), status_code=st_code, media_type=m_type, headers=hdrs)
 
-    async def _m4a_file_stream(start_pos, max_bytes):
+    async def _file_stream(start_pos, max_bytes):
         sent = 0
         if _OS.path.exists(j["p"]):
             with open(j["p"], "rb") as f:
@@ -3854,7 +3711,7 @@ async def _k12_seek_mw(req, call_next):
                     else:
                         await _A.sleep(0.04)
 
-    return _SR(_m4a_file_stream(st_b, content_len), status_code=st_code, media_type="audio/mp4", headers=hdrs)
+    return _SR(_file_stream(st_b, content_len), status_code=st_code, media_type=m_type, headers=hdrs)
 
 _SCACHE.clear()
 
@@ -4777,95 +4634,11 @@ async def _k15_user_isolation_mw(req, call_next):
         _CUR_USER_CTX.reset(tok)
 
 _SCACHE.clear()
-# --- K16: V1.5.8 PURE ON-DEMAND 500x500 SQUARE ARTWORK (ZERO BACKGROUND PRELOADING) ---
-_ART_DIR = "/data/art_cache_v30" if _OS.path.isdir("/data") else "/tmp/art_cache_v30"
+# --- K16: V1.6.0 10/10 CAR ARTWORK SYNC (PRE-STREAM LOCK + SILENT NEXT-1 PREFETCH) ---
+_ART_DIR = "/data/art_cache_v31" if _OS.path.isdir("/data") else "/tmp/art_cache_v31"
 _OS.makedirs(_ART_DIR, exist_ok=True)
-_FAST_ART_POOL = _CF.ThreadPoolExecutor(max_workers=8)
-
-def _fix_url_500(u):
-    u = str(u or "").strip()
-    if u.startswith("//"):
-        u = "https:" + u
-    if "yt3.ggpht.com" in u or "googleusercontent.com" in u:
-        u = _RE.sub(r"=s\d+[^/]*$", "=s500-c-k-c0x00ffffff-no-rj", u)
-        u = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l92-rj", u)
-    return u
-
-def _crop_500_square(d, mode="square"):
-    if not d or len(d) < 250:
-        return None
-    if mode == "square" and d.startswith(b"\xff\xd8") and len(d) < 95000:
-        return d
-
-    tid = f"{_TH.get_ident()}_{_RND.randint(1000,9999)}"
-    fin = f"/tmp/art_in_{tid}.img"
-    fout = f"/tmp/art_out_{tid}.jpg"
-    try:
-        open(fin, "wb").write(d)
-        if mode == "maxres":
-            vf = "scale=890:500:force_original_aspect_ratio=increase,crop=500:500"
-        elif mode == "hq43":
-            vf = "crop=iw:iw*9/16:0:(ih-iw*9/16)/2,scale=890:500:force_original_aspect_ratio=increase,crop=500:500"
-        else:
-            vf = "scale=500:500:force_original_aspect_ratio=increase,crop=500:500"
-
-        p = _SP.run([
-            "ffmpeg", "-y", "-loglevel", "error", "-i", fin,
-            "-frames:v", "1", "-vf", vf,
-            "-pix_fmt", "yuvj420p", "-strict", "-2",
-            "-map_metadata", "-1", "-q:v", "2", fout
-        ], stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=3.5)
-        if p.returncode == 0 and _OS.path.exists(fout) and _OS.path.getsize(fout) > 300:
-            out_b = open(fout, "rb").read()
-            if out_b.startswith(b"\xff\xd8"):
-                return out_b
-    except Exception:
-        pass
-    finally:
-        for fp in (fin, fout):
-            try:
-                if _OS.path.exists(fp):
-                    _OS.remove(fp)
-            except Exception:
-                pass
-    return d if d.startswith(b"\xff\xd8") else None
-
-def _fetch_yt_500_vid(vid):
-    if not _RE.match(r"^[A-Za-z0-9_-]{11}$", str(vid or "")):
-        return None
-    if vid in _YTM_THUMB:
-        tu = _fix_url_500(_YTM_THUMB[vid])
-        d = _dl_fast(tu, 400, 1.4)
-        if d:
-            jpg = _crop_500_square(d, "square")
-            if jpg:
-                return jpg
-
-    f_max = _FAST_ART_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 1800, 0.85)
-    f_hq  = _FAST_ART_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 600, 1.3)
-
-    try:
-        d_max = f_max.result(timeout=0.9)
-        if d_max:
-            jpg = _crop_500_square(d_max, "maxres")
-            if jpg:
-                return jpg
-    except Exception:
-        pass
-
-    try:
-        d_hq = f_hq.result(timeout=1.4)
-        if d_hq:
-            jpg = _crop_500_square(d_hq, "hq43")
-            if jpg:
-                return jpg
-    except Exception:
-        pass
-
-    d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 400, 1.2)
-    if d_mq:
-        return _crop_500_square(d_mq, "maxres")
-    return None
+_FAST_ART_POOL = _CF.ThreadPoolExecutor(max_workers=12)
+_NEXT_ONE_MAP = {}
 
 def _norm_art_key(cid):
     s = str(cid or "").strip()
@@ -4908,73 +4681,53 @@ def _get_art_600(cid):
                 _ART_RAM[ckey] = d
             return d
 
-        if kind == "ar":
-            if k_id not in _ARTIST_THUMB:
-                aname = _resolve_artist_name(k_id)
-                if aname:
-                    _yt_web_search(aname, "")
-                    if k_id not in _ARTIST_THUMB:
-                        _ytm_search_artists_and_pls(aname)
-            tu = _ARTIST_THUMB.get(k_id, "")
-            if tu:
-                d = _dl_fast(_fix_url_500(tu), 300, 1.8)
-                jpg = _crop_500_square(d, "square")
-                if jpg:
-                    open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
-            return None
+        try:
+            if kind == "hdd" and _HDD:
+                cands = []
+                for x in [raw_id, "al-" + k_id, k_id, "mf-" + raw_id, "al-" + raw_id]:
+                    if x and x not in cands:
+                        cands.append(x)
+                for cand in cands:
+                    try:
+                        cq = [x for x in _hdd_q([("id", cand), ("size", "500")]) if x[0] != "f"]
+                        with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent": "Resonus"}), timeout=2.5, context=_CTX) as r:
+                            d = r.read()
+                            if r.status == 200 and len(d) > 300 and not d.lstrip().startswith(b"<"):
+                                open(cf, "wb").write(d)
+                                _ART_RAM[ckey] = d
+                                return d
+                    except Exception:
+                        pass
 
-        if kind == "pl":
-            tu = _PL_THUMB.get(k_id, "")
-            if tu:
-                m_vi = _RE.search(r"/vi/([A-Za-z0-9_-]{11})/", tu)
-                if m_vi:
-                    jpg = _fetch_yt_500_vid(m_vi.group(1))
-                    if jpg:
-                        open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
-                d = _dl_fast(_fix_url_500(tu), 300, 1.8)
-                jpg = _crop_500_square(d, "hq43" if "hqdefault" in tu else "square")
-                if jpg:
-                    open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
-            tr_list = _PL_TRACKS_CACHE.get(k_id) or _yt_playlist_tracks(k_id)
-            if tr_list and tr_list[0].get("id"):
-                jpg = _fetch_yt_500_vid(tr_list[0]["id"])
-                if jpg:
-                    open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
-            return None
-
-        if kind == "hdd" and _HDD:
-            cands = []
-            for x in [raw_id, "al-" + k_id, k_id, "mf-" + raw_id, "al-" + raw_id]:
-                if x and x not in cands:
-                    cands.append(x)
-            for cand in cands:
-                try:
-                    cq = [x for x in _hdd_q([("id", cand), ("size", "500")]) if x[0] != "f"]
-                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent": "Resonus"}), timeout=2.5, context=_CTX) as r:
-                        d = r.read()
-                        if r.status == 200 and len(d) > 300 and not d.lstrip().startswith(b"<"):
-                            jpg = _crop_500_square(d, "square")
-                            if jpg:
-                                open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
-                except Exception:
-                    pass
-
-        if _RE.match(r"^[A-Za-z0-9_-]{11}$", k_id):
-            jpg = _fetch_yt_500_vid(k_id)
-            if jpg:
-                open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+            m_v = _RE.search(r"([A-Za-z0-9_-]{11})$", str(k_id))
+            if m_v:
+                vid = m_v.group(1)
+                if vid in _YTM_THUMB:
+                    tu = _YTM_THUMB[vid]
+                    if tu.startswith("//"):
+                        tu = "https:" + tu
+                    tu = _RE.sub(r"=s\d+[^/]*$", "=s500-c-k-c0x00ffffff-no-rj", tu)
+                    tu = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l90-rj", tu)
+                    d = _dl_fast(tu, 400, 1.4)
+                    if d and d.startswith(b"\xff\xd8"):
+                        open(cf, "wb").write(d); _ART_RAM[ckey] = d; return d
+                d_hq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 500, 1.4)
+                if d_hq:
+                    open(cf, "wb").write(d_hq); _ART_RAM[ckey] = d_hq; return d_hq
+        except Exception:
+            pass
     return None
 
 def _get_art_bytes(cid, req_size=0):
     return _get_art_600(cid)
 
-# Tat hoan toan nap truoc hang loat (_prewarm_list = No-op) de giai phong 100% CPU va RAM!
 def _prewarm_list(ids):
     return
 
 _orig_fmt_base_k16 = _orig_fmt_k11
 def _patched_fmt_k16(rt, js, cb=None):
     _cln(rt)
+    song_seq = []
     for x in rt.iter():
         a = x.attrib
         sid = str(a.get("id") or "")
@@ -4986,18 +4739,24 @@ def _patched_fmt_k16(rt, js, cb=None):
                 if alid and rid_clean:
                     _ART_MAP[rid_clean] = alid
                 raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", ca or ("al-" + alid if alid else rid_clean))
-                a["coverArt"] = "hdd30_" + raw_ca
+                a["coverArt"] = "hdd31_" + raw_ca
             else:
                 vid_clean = _RE.sub(r"^(yt\d*_|al_)+", "", sid)
-                a["coverArt"] = "yt30_" + vid_clean
+                a["coverArt"] = "yt31_" + vid_clean
+            song_seq.append((_norm_art_key(sid)[1], a["coverArt"]))
         elif ca:
             raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", ca)
             while raw_ca.startswith("al_") and len(raw_ca) >= 14:
                 raw_ca = raw_ca[3:]
             if ca.startswith("hdd") or sid.startswith("hdd"):
-                a["coverArt"] = "hdd30_" + raw_ca
+                a["coverArt"] = "hdd31_" + raw_ca
             else:
-                a["coverArt"] = "yt30_" + raw_ca
+                a["coverArt"] = "yt31_" + raw_ca
+
+    # Ghi nho duy nhat 1 bai ke tiep (Next-1) de khi bai truoc dang hat thi tai san anh cua DUNG 1 bai ke tiep!
+    for idx in range(len(song_seq) - 1):
+        _NEXT_ONE_MAP[song_seq[idx][0]] = song_seq[idx + 1][1]
+
     rt.attrib.update({"status": rt.attrib.get("status", "ok"), "version": "1.16.1", "type": "subsonic", "serverVersion": "1.16.1"})
     if js:
         b = _J.dumps({"subsonic-response": _x2d(rt, 0)})
@@ -5008,7 +4767,7 @@ def _patched_fmt_k16(rt, js, cb=None):
 _orig_fmt_k11 = _patched_fmt_k16
 
 @app.middleware("http")
-async def _k16_ondemand_art_mw(req, call_next):
+async def _k16_classic_art_mw(req, call_next):
     p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
     if not pl.startswith("/rest/"):
         return await call_next(req)
@@ -5017,7 +4776,7 @@ async def _k16_ondemand_art_mw(req, call_next):
     qd = dict(qi)
     lp = _A.get_running_loop()
 
-    # 1. Chi tai anh khi App thuc su goi getCoverArt cho bai hat do
+    # 1. Tra anh 500x500 tuc thi tu RAM/Disk
     if "/getcoverart" in pl:
         cid = str(qd.get("id") or "").strip()
         d = await lp.run_in_executor(_FAST_ART_POOL, _get_art_600, cid) if cid else None
@@ -5028,17 +4787,26 @@ async def _k16_ondemand_art_mw(req, call_next):
                 headers={
                     **_CORS,
                     "Content-Length": str(len(d)),
-                    "Cache-Control": "public, max-age=604800"
+                    "Cache-Control": "public, max-age=604800, immutable"
                 }
             )
         return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1))})
 
-    # 2. Khi bat dau phat 1 bai duy nhat: Chi nap anh cua DUNG 1 BAI DO (khong nap truoc cac bai phia sau)
+    # 2. Bi quyet dat 10/10 tren Wavio ma khong nang may:
+    # - Giu nhip 0.8s de anh cua bai dang bat KIP VAO RAM truoc khi Wavio goi getCoverArt.
+    # - Am tham nap truoc DUNG 1 BAI KE TIEP (Next-1) de khi chuyen bai la co anh trong 0.0005s!
     if "/stream" in pl or "/download" in pl:
         sid = str(qd.get("id") or "").strip()
         rng = req.headers.get("range") or req.headers.get("Range") or ""
         if sid and ((not rng) or rng.startswith("bytes=0-")):
-            _FAST_ART_POOL.submit(_get_art_600, sid)
+            try:
+                await _A.wait_for(lp.run_in_executor(_FAST_ART_POOL, _get_art_600, sid), timeout=0.85)
+            except Exception:
+                pass
+            _, cur_k, _ = _norm_art_key(sid)
+            nxt_ca = _NEXT_ONE_MAP.get(cur_k)
+            if nxt_ca:
+                _FAST_ART_POOL.submit(_get_art_600, nxt_ca)
 
     return await call_next(req)
 
