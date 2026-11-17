@@ -4271,3 +4271,305 @@ def _build_endless_hdd_album(p, qi, rid):
 
 _TH.Thread(target=_get_all_hdd_songs, daemon=True).start()
 _SCACHE.clear()
+
+# --- K15: V1.5.0 PER-USER ISOLATION (RECENTLY PLAYED, MOST PLAYED & PLAY QUEUE) ---
+import contextvars as _CV
+import datetime as _DT
+
+_CUR_USER_CTX = _CV.ContextVar("_CUR_USER_CTX", default="admin")
+_USER_PROF_FILE = "/data/user_profiles_v150.json" if _OS.path.isdir("/data") else "/tmp/user_profiles_v150.json"
+_USER_PROF_LOCK = _TH.Lock()
+_USER_LAST_REC = {}
+
+def _load_user_profiles():
+    try:
+        if _OS.path.exists(_USER_PROF_FILE):
+            d = _J.loads(open(_USER_PROF_FILE, "r", encoding="utf-8").read())
+            if isinstance(d, dict):
+                return d
+    except Exception:
+        pass
+    return {}
+
+_U_PROFILES = _load_user_profiles()
+
+def _save_user_profiles():
+    try:
+        with _USER_PROF_LOCK:
+            tmp_f = _USER_PROF_FILE + ".tmp"
+            with open(tmp_f, "w", encoding="utf-8") as f:
+                f.write(_J.dumps(_U_PROFILES, ensure_ascii=False))
+            _OS.replace(tmp_f, _USER_PROF_FILE)
+    except Exception:
+        pass
+
+def _get_u_prof(uname=None):
+    u = str(uname or _CUR_USER_CTX.get() or "admin").strip().lower() or "admin"
+    with _USER_PROF_LOCK:
+        if u not in _U_PROFILES or not isinstance(_U_PROFILES[u], dict):
+            _U_PROFILES[u] = {
+                "recent": [],
+                "counts": {},
+                "ts": {},
+                "hdd_meta": {},
+                "last_play": {"kind": "yt", "id": ""},
+                "queue": {"current": "", "position": "0", "ids": [], "changed": ""}
+            }
+        p = _U_PROFILES[u]
+        p.setdefault("recent", [])
+        p.setdefault("counts", {})
+        p.setdefault("ts", {})
+        p.setdefault("hdd_meta", {})
+        p.setdefault("last_play", {"kind": "yt", "id": ""})
+        p.setdefault("queue", {"current": "", "position": "0", "ids": [], "changed": ""})
+        return p
+
+def _now_iso():
+    return _DT.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+def _record_user_item(uname, item_key, hdd_info=None):
+    u = str(uname or _CUR_USER_CTX.get() or "admin").strip().lower() or "admin"
+    now = _TM.time()
+    deb_key = f"{u}_{item_key}"
+    is_repeat_req = (now - _USER_LAST_REC.get(deb_key, 0.0)) < 25.0
+    _USER_LAST_REC[deb_key] = now
+
+    p = _get_u_prof(u)
+    with _USER_PROF_LOCK:
+        rec = p["recent"]
+        if item_key in rec:
+            rec.remove(item_key)
+        rec.insert(0, item_key)
+        if len(rec) > 150:
+            del rec[150:]
+        if not is_repeat_req:
+            p["counts"][item_key] = int(p["counts"].get(item_key, 0)) + 1
+        p["ts"][item_key] = _now_iso()
+        if hdd_info and isinstance(hdd_info, dict):
+            p["hdd_meta"][item_key] = hdd_info
+            if len(p["hdd_meta"]) > 200:
+                oldest_k = next(iter(p["hdd_meta"]))
+                if oldest_k != item_key:
+                    p["hdd_meta"].pop(oldest_k, None)
+    if not is_repeat_req:
+        _DL_POOL.submit(_save_user_profiles)
+
+# Ghi de _record_yt_play de moi luong phat YouTube chi luu vao dung User dang dang nhap
+def _record_yt_play(vid, is_vid=False):
+    clean_v = _RE.sub(r"^(yt\d*_|al_)+", "", str(vid or "").strip())
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
+    if not m:
+        return
+    v = m.group(1)
+    u = _CUR_USER_CTX.get() or "admin"
+    p = _get_u_prof(u)
+    p["last_play"] = {"kind": "yt", "id": v}
+    _record_user_item(u, f"yt:{v}")
+
+def _record_hdd_play_for_user(u, sid):
+    raw_s = _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(sid or "").strip())
+    if not raw_s:
+        return
+    all_hdd = _get_all_hdd_songs()
+    song_d = None
+    for s in all_hdd:
+        sid_c = _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(s.get("id", "")))
+        alid_c = _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(s.get("albumId") or s.get("parent") or ""))
+        if raw_s in (sid_c, alid_c):
+            song_d = dict(s)
+            break
+    if not song_d:
+        song_d = _fetch_single_hdd_meta(sid)
+    if not song_d:
+        return
+
+    raw_al = _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(song_d.get("albumId") or song_d.get("parent") or song_d.get("id") or raw_s))
+    hdd_al_id = "hdd_" + raw_al
+    alb_name = str(song_d.get("album") or song_d.get("title") or song_d.get("name") or "HDD Album")
+    if not alb_name.startswith("[HDD]"):
+        alb_name = "[HDD] " + alb_name
+    art_name = str(song_d.get("artist") or "HDD Artist")
+    arid = str(song_d.get("artistId") or "hdd_ar")
+    if arid and not arid.startswith("hdd_"):
+        arid = "hdd_" + _RE.sub(r"^hdd\d*_", "", arid)
+
+    alb_meta = {
+        "id": hdd_al_id,
+        "parent": arid,
+        "isDir": "true",
+        "name": alb_name,
+        "title": alb_name,
+        "album": alb_name,
+        "artist": art_name,
+        "artistId": arid,
+        "coverArt": hdd_al_id,
+        "songCount": str(song_d.get("songCount") or "10"),
+        "duration": str(song_d.get("duration") or "240"),
+        "year": str(song_d.get("year") or "2026"),
+        "genre": str(song_d.get("genre") or "HDD Music"),
+        "seedSongId": "hdd_" + _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(song_d.get("id") or raw_s))
+    }
+    p = _get_u_prof(u)
+    p["last_play"] = {"kind": "hdd", "id": alb_meta["seedSongId"]}
+    _record_user_item(u, f"hdd:{hdd_al_id}", hdd_info=alb_meta)
+
+def _build_user_album_list(u, ltype, size, offset, tag_name):
+    p = _get_u_prof(u)
+    if ltype == "frequent":
+        cnts = p.get("counts") or {}
+        ordered_keys = [k for k, _ in sorted(cnts.items(), key=lambda x: (-int(x[1]), p["recent"].index(x[0]) if x[0] in p["recent"] else 9999))]
+    else:
+        ordered_keys = list(p.get("recent") or [])
+
+    sliced = ordered_keys[offset : offset + size]
+    rt = _E.Element("subsonic-response", status="ok")
+    al_list = _E.SubElement(rt, tag_name)
+
+    for item_k in sliced:
+        play_cnt = str((p.get("counts") or {}).get(item_k, 1))
+        played_ts = (p.get("ts") or {}).get(item_k) or _now_iso()
+
+        if item_k.startswith("hdd:"):
+            hm = (p.get("hdd_meta") or {}).get(item_k)
+            if hm and isinstance(hm, dict):
+                at = {k: str(v) for k, v in hm.items() if k != "seedSongId"}
+                at["created"] = played_ts
+                at["played"] = played_ts
+                at["playCount"] = play_cnt
+                _E.SubElement(al_list, "album", **at)
+        elif item_k.startswith("yt:"):
+            vid = item_k[3:]
+            s = _YL.get(vid) or _ensure_vid_meta(vid)
+            if not s:
+                continue
+            tit = s.get("title") or s.get("album") or vid
+            art = s.get("artist") or "YouTube Music"
+            arid = s.get("artistId") or ("ar_" + _H.md5(_nfc(art).encode("utf-8")).hexdigest()[:10])
+            at = {
+                "id": "al_" + vid,
+                "parent": arid,
+                "isDir": "true",
+                "name": tit,
+                "title": tit,
+                "album": s.get("album") or tit,
+                "artist": art,
+                "artistId": arid,
+                "coverArt": vid,
+                "songCount": "1",
+                "duration": str(s.get("duration") or "240"),
+                "created": played_ts,
+                "played": played_ts,
+                "year": "2026",
+                "genre": s.get("genre") or "YouTube Music",
+                "playCount": play_cnt
+            }
+            _E.SubElement(al_list, "album", **at)
+    return rt
+
+@app.middleware("http")
+async def _k15_user_isolation_mw(req, call_next):
+    if req.method == "OPTIONS":
+        return await call_next(req)
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if not pl.startswith("/rest/"):
+        return await call_next(req)
+
+    _load_addon_opts()
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    if req.method == "POST":
+        bf = await req.body()
+        if bf:
+            try:
+                qi.extend([(str(k), str(v)) for k, v in _J.loads(bf).items()] if bf.strip().startswith(b"{") else _pq(bf.decode("utf-8", "ignore"), keep_blank_values=True))
+            except Exception:
+                pass
+        async def _rc():
+            return {"type": "http.request", "body": bf, "more_body": False}
+        req._receive = _rc
+
+    qd = dict(qi); fv = qd.get("f", "").lower()
+    js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
+    cb = qd.get("callback") if fv == "jsonp" else None
+    if not _check_auth(qd):
+        return await call_next(req)
+
+    uname = str(qd.get("u") or "admin").strip().lower() or "admin"
+    tok = _CUR_USER_CTX.set(uname)
+    lp = _A.get_running_loop()
+
+    try:
+        u_prof = _get_u_prof(uname)
+        # Dong bo trang thai bai hat cuoi cung cua rieng User nay cho Endless Autoplay
+        if u_prof.get("last_play", {}).get("id"):
+            _LAST_PLAY_STATE["kind"] = u_prof["last_play"]["kind"]
+            _LAST_PLAY_STATE["id"] = u_prof["last_play"]["id"]
+
+        # 1. Ghi nhan lich su nghe nhac HDD rieng theo tung User khi Stream
+        if "/stream" in pl or "/download" in pl:
+            sid = str(qd.get("id") or "").strip()
+            if sid and sid.startswith("hdd"):
+                _DL_POOL.submit(_record_hdd_play_for_user, uname, sid)
+            return await call_next(req)
+
+        # 2. Xu ly Scrobble rieng theo tung User (Chan khong cho ban be ghi de scrobble xuong Navidrome cua de tu)
+        if "/scrobble" in pl:
+            sid = str(qd.get("id") or "").strip()
+            subm = str(qd.get("submission") or "true").lower() != "false"
+            if sid and subm:
+                if sid.startswith("hdd"):
+                    _DL_POOL.submit(_record_hdd_play_for_user, uname, sid)
+                else:
+                    _record_yt_play(sid, False)
+            rt = _E.Element("subsonic-response", status="ok")
+            return _fmt(rt, js, cb)
+
+        # 3. Tra ve Recently Played (recent) & Most Played (frequent) CUA RIENG USER DANG DANG NHAP
+        if "getalbumlist" in pl:
+            ltype = str(qd.get("type") or "").strip().lower()
+            if ltype in ("recent", "frequent"):
+                sz = int(qd.get("size") or 30) if str(qd.get("size", "")).isdigit() else 30
+                off = int(qd.get("offset") or 0) if str(qd.get("offset", "")).isdigit() else 0
+                tg_name = "albumList2" if "2" in pl else "albumList"
+                rt = await lp.run_in_executor(_REQ_POOL, _build_user_album_list, uname, ltype, sz, off, tg_name)
+                return _fmt(rt, js, cb)
+
+        # 4. Tach biet Hang doi phat nhac (savePlayQueue / getPlayQueue) theo tung User
+        if "saveplayqueue" in pl:
+            q_ids = [str(v).strip() for k, v in qi if k == "id" and str(v).strip()]
+            u_prof["queue"] = {
+                "current": str(qd.get("current") or (q_ids[0] if q_ids else "")),
+                "position": str(qd.get("position") or "0"),
+                "ids": q_ids[:100],
+                "changed": _now_iso(),
+                "changedBy": str(qd.get("c") or "Mirasonic")
+            }
+            _DL_POOL.submit(_save_user_profiles)
+            rt = _E.Element("subsonic-response", status="ok")
+            return _fmt(rt, js, cb)
+
+        if "getplayqueue" in pl:
+            rt = _E.Element("subsonic-response", status="ok")
+            q_data = u_prof.get("queue") or {}
+            q_ids = q_data.get("ids") or []
+            if q_ids:
+                pq_el = _E.SubElement(
+                    rt, "playQueue",
+                    current=str(q_data.get("current") or q_ids[0]),
+                    position=str(q_data.get("position") or "0"),
+                    username=uname,
+                    changed=str(q_data.get("changed") or _now_iso()),
+                    changedBy=str(q_data.get("changedBy") or "Mirasonic")
+                )
+                for qid in q_ids:
+                    if not qid.startswith("hdd"):
+                        clean_v = _RE.sub(r"^(yt\d*_|al_)+", "", qid)
+                        s = _YL.get(clean_v) or _ensure_vid_meta(clean_v)
+                        if s:
+                            _E.SubElement(pq_el, "entry", **s)
+            return _fmt(rt, js, cb)
+
+        return await call_next(req)
+    finally:
+        _CUR_USER_CTX.reset(tok)
+
+_SCACHE.clear()
