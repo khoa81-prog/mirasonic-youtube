@@ -4635,7 +4635,7 @@ async def _k15_user_isolation_mw(req, call_next):
 
 _SCACHE.clear()
 
-# --- K16: V1.7.8 TURBO ZERO-FFMPEG RAM ARTWORK ENGINE (0.002S PIL + DIRECT YTM PASS-THROUGH) ---
+# --- K16: V1.8.0 TURBO RAM ARTWORK ENGINE (0.002S PIL + DIRECT YTM PASS-THROUGH) ---
 try:
     from PIL import Image as _PIL_IMG
     _HAS_PIL = True
@@ -4650,7 +4650,6 @@ except Exception:
 _ART_DIR = "/data/art_cache_v36" if _OS.path.isdir("/data") else "/tmp/art_cache_v36"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 
-# Ke thua toan bo anh da cat tu cac thu muc v31..v35 sang v36 de khong phai tai lai tu dau!
 try:
     for _old_v in ("v31", "v32", "v33", "v34", "v35"):
         _od = f"/data/art_cache_{_old_v}"
@@ -4678,11 +4677,9 @@ def _fix_url_500(u):
 def _crop_500_square(d, mode="square"):
     if not d or len(d) < 250:
         return None
-    # Neu la anh vuong san (YTMusic / HDD) -> Tra thang byte goc ngay lap tuc (0% CPU, 0.000s!)
     if mode == "square" and d.startswith(b"\xff\xd8"):
         return d
 
-    # Cat anh 16:9 / 4:3 (hqdefault) 100% tren RAM bang PIL BILINEAR (chi mat 0.002 giay!)
     if _HAS_PIL:
         try:
             im = _PIL_IMG.open(_IO.BytesIO(d)).convert("RGB")
@@ -4692,7 +4689,6 @@ def _crop_500_square(d, mode="square"):
                     im = im.resize((500, 500), getattr(_PIL_IMG, "Resampling", _PIL_IMG).BILINEAR)
             else:
                 if mode == "hq43" or (w == 480 and h == 360):
-                    # Cat bo 100% 2 dai vien den 45px tren/duoi cua hqdefault.jpg
                     h_169 = int(w * 9 / 16)
                     if h > h_169:
                         top = (h - h_169) // 2
@@ -4712,7 +4708,6 @@ def _crop_500_square(d, mode="square"):
         except Exception:
             pass
 
-    # Fallback duy nhat khi khong co PIL: Dung pipe memory (stdin/stdout), KHONG GHI FILE TAM /tmp RA O CUNG!
     try:
         vf = "crop=ih*9/16:ih*9/16:(iw-ih*9/16)/2:ih*7/32,scale=500:500" if mode == "hq43" else "crop=ih:ih:(iw-ih)/2:0,scale=500:500"
         p = _SP.run(
@@ -4728,7 +4723,6 @@ def _crop_500_square(d, mode="square"):
 def _fetch_yt_500_vid(vid):
     if not _RE.match(r"^[A-Za-z0-9_-]{11}$", str(vid or "")):
         return None
-    # 1. Neu co anh vuong YouTube Music -> Google CDN tra ve san anh vuong 500x500 (~22KB), KHONG CAN CAT!
     if vid in _YTM_THUMB:
         tu = _fix_url_500(_YTM_THUMB[vid])
         d = _dl_fast(tu, 300, 0.9)
@@ -4739,7 +4733,6 @@ def _fetch_yt_500_vid(vid):
             if jpg:
                 return jpg
 
-    # 2. Lay hqdefault.jpg (~15KB, tai trong 0.06s) va cat 2 vien den tren RAM trong 0.002s!
     d_hq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 400, 0.9)
     if d_hq:
         jpg = _crop_500_square(d_hq, "hq43")
@@ -4766,10 +4759,10 @@ def _norm_art_key(cid):
     raw_id = clean_s
     kind = "hdd" if is_hdd else ("yt" if (s.startswith("yt") or _RE.match(r"^[A-Za-z0-9_-]{11}$", raw_id)) else "hdd")
     if kind == "hdd":
-        raw_hdd = _RE.sub(r"^(al-|mf-)", "", raw_id)
-        k_id = _ART_MAP.get(raw_id) or _ART_MAP.get(raw_hdd) or raw_id
-        k_id = _RE.sub(r"^(al-|mf-)", "", str(k_id))
-        return ("hdd", k_id, raw_id)
+        raw_hdd = _RE.sub(r"^(al_|al-|mf-)", "", raw_id)
+        k_id = _ART_MAP.get(raw_id) or _ART_MAP.get(raw_hdd) or raw_hdd
+        k_id = _RE.sub(r"^(al_|al-|mf-)", "", str(k_id))
+        return ("hdd", k_id, raw_hdd)
     m_v = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_id)
     k_id = m_v.group(1) if m_v else raw_id
     return ("yt", k_id, raw_id)
@@ -4851,8 +4844,8 @@ def _patched_fmt_k16(rt, js, cb=None):
         if x.tag in ("song", "child", "entry") and a.get("isDir") != "true":
             t_name = str(a.get("title") or a.get("name") or sid)
             if sid.startswith("hdd"):
-                alid = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(a.get("albumId") or a.get("parent") or ""))
-                rid_clean = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", sid)
+                alid = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(a.get("albumId") or a.get("parent") or ""))
+                rid_clean = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", sid)
                 if alid and rid_clean:
                     _ART_MAP[rid_clean] = alid
                 a["coverArt"] = "hdd36_trk_" + rid_clean
@@ -4893,13 +4886,11 @@ async def _k16_ondemand_art_mw(req, call_next):
     qd = dict(qi)
     lp = _A.get_running_loop()
 
-    # 1. Tra anh tuc thi tu RAM/Disk voi Cache-Control: immutable (Vi moi bai da co ID yt36_trk_<vid> rieng biet!)
     if "/getcoverart" in pl:
         cid = str(qd.get("id") or "").strip()
         if cid:
             kind, k_id, _ = _norm_art_key(cid)
             ckey = f"{kind}_{k_id}"
-            # Neu da co trong RAM -> Tra ngay trong 0.0001s khong can qua ThreadPool!
             d = _ART_RAM.get(ckey)
             if not d:
                 d = await lp.run_in_executor(_FAST_ART_POOL, _get_art_600, cid)
@@ -4915,7 +4906,6 @@ async def _k16_ondemand_art_mw(req, call_next):
                 )
         return _R(content=b"", status_code=404, headers={**_CORS, "Cache-Control": "no-store"})
 
-    # 2. Khi bam Play: Khong block luong /stream (0.0s wait), goi nap anh song song tren RAM!
     if "/stream" in pl or "/download" in pl:
         sid = str(qd.get("id") or "").strip()
         rng = req.headers.get("range") or req.headers.get("Range") or ""
@@ -4925,7 +4915,6 @@ async def _k16_ondemand_art_mw(req, call_next):
                 _FAST_ART_POOL.submit(_get_art_600, sid)
 
     return await call_next(req)
-
 
 # --- K17: V1.7.6 100% STRICT USER ISOLATION (RECENTLY PLAYED, MOST PLAYED, PLAYLISTS & STARRED) ---
 def _clean_uname(u):
@@ -5467,31 +5456,29 @@ except Exception:
 
 _SCACHE.clear()
 
-
-# --- K18: V1.7.7 STRICT YOUTUBE MUSIC vs YOUTUBE SEPARATION & LANGUAGE LOCK (EN/VI) ---
-_VN_CHARS_RE = _RE.compile(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]")
+# --- K18: V1.8.0 DYNAMIC SHUFFLE NEXT-QUEUE (NEW MIX EVERY CLICK) & HDD ENDLESS RADIO ---
+_VN_CHARS_RE = _RE.compile(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍịỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]")
 
 _NON_MUSIC_JUNK_RE = _RE.compile(
     r"\b(review\s*phim|tóm\s*tắt|tom\s*tat|thế\s*chiến|the\s*chien|lịch\s*sử|lich\s*su|"
     r"sử\s*để\s*hiểu|chủ\s*tịch|chu\s*tich|giả\s*làm|gia\s*lam|rổ\s*phim|ro\s*phim|"
     r"tiểu\s*tâm|tieu\s*tam|thời\s*sự|thoi\s*su|tin\s*tức|tin\s*tuc|bản\s*tin|"
     r"truyện\s*ma|truyện\s*đêm|đọc\s*truyện|phim\s*ngắn|tập\s*\d+|full\s*bộ|"
-    r" thuyết\s*minh|lồng\s*tiếng|reaction|podcast|interview|phỏng\s*vấn|"
+    r"thuyết\s*minh|lồng\s*tiếng|reaction|podcast|interview|phỏng\s*vấn|"
     r"gameplay|walkthrough|highlights|bóng\s*đá|trực\s*tiếp)\b",
     _RE.I
 )
+
+_YT_RADIO_POOL_CACHE = {}
+_HDD_MEM_POOL = {"songs": [], "ts": 0}
 
 def _has_vietnamese(s):
     return bool(_VN_CHARS_RE.search(str(s or "")))
 
 def _is_non_music_junk(title, artist=""):
-    comb = f"{title} {artist}"
-    return bool(_NON_MUSIC_JUNK_RE.search(comb))
+    return bool(_NON_MUSIC_JUNK_RE.search(f"{title} {artist}"))
 
 def _is_ytm_track(vid):
-    # Mot bai hat duoc xac dinh la YouTube Music neu:
-    # 1. Co anh vuong goc tren CDN cua YouTube Music (_YTM_THUMB chua googleusercontent.com / lh3.)
-    # 2. Hoac trong metadata _YL khong phai la Video ([Video] / isVideo="true") va co anh trong _YTM_THUMB
     tu = str(_YTM_THUMB.get(vid) or "")
     if "googleusercontent.com" in tu or "ggpht.com" in tu:
         return True
@@ -5510,8 +5497,8 @@ def _parse_dur_str(ds):
         return parts[0] * 3600 + parts[1] * 60 + parts[2]
     return 240
 
-# 1. CHI LAY NHAC TREN YOUTUBE MUSIC (music.youtube.com API - SONGS ONLY!)
-def _fetch_pure_ytm_next_tracks(seed_vid, seed_title, seed_artist, is_vn_seed, limit=25):
+# 1. LAY POOL LON (45-55 BAI) TU YOUTUBE MUSIC RADIO + YTMUSIC SEARCH DE MOI LAN BAM LA XAO RA 1 DANH SACH MOI!
+def _fetch_pure_ytm_pool(seed_vid, seed_title, seed_artist, is_vn_seed, pool_limit=48):
     out = []
     seen = {seed_vid}
 
@@ -5520,13 +5507,10 @@ def _fetch_pure_ytm_next_tracks(seed_vid, seed_title, seed_artist, is_vn_seed, l
             return
         if not tit or _is_non_music_junk(tit, art):
             return
-        # KHOA NGON NGU TUYET DOI:
-        # - Neu bai goc la TIENG ANH (khong co dau tieng Viet) -> CAM 100% bai co dau tieng Viet lot vao!
-        # - Neu bai goc la TIENG VIET -> Uu tien giu mach nhac tieng Viet!
         item_is_vn = _has_vietnamese(tit) or _has_vietnamese(art)
         if not is_vn_seed and item_is_vn:
             return
-        if is_vn_seed and not item_is_vn and len(out) < 18:
+        if is_vn_seed and not item_is_vn and len(out) < 25:
             return
         if dur_s < 65 or dur_s > 900:
             return
@@ -5537,90 +5521,83 @@ def _fetch_pure_ytm_next_tracks(seed_vid, seed_title, seed_artist, is_vn_seed, l
         if sd:
             out.append(sd)
 
-    # Buoc A: Goi truc tiep YouTube Music Radio Queue (next endpoint voi playlistId=RDAMVM{seed_vid} cua rieng YTMusic!)
-    try:
-        pl_body = _J.dumps({
-            "context": {
-                "client": {
-                    "clientName": "WEB_REMIX",
-                    "clientVersion": "1.20260101.01.00",
-                    "hl": "vi" if is_vn_seed else "en",
-                    "gl": "VN" if is_vn_seed else "US"
+    # Luong 1: YTMusic Automix Radio (RDAMVM)
+    def _task_radio():
+        try:
+            pl_body = _J.dumps({
+                "context": {
+                    "client": {
+                        "clientName": "WEB_REMIX",
+                        "clientVersion": "1.20260101.01.00",
+                        "hl": "vi" if is_vn_seed else "en",
+                        "gl": "VN" if is_vn_seed else "US"
+                    }
+                },
+                "videoId": seed_vid,
+                "playlistId": f"RDAMVM{seed_vid}",
+                "isAudioOnly": True
+            }).encode("utf-8")
+            req = _U.Request(
+                "https://music.youtube.com/youtubei/v1/next?prettyPrint=false",
+                data=pl_body,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0",
+                    "Origin": "https://music.youtube.com",
+                    "Referer": "https://music.youtube.com/"
                 }
-            },
-            "videoId": seed_vid,
-            "playlistId": f"RDAMVM{seed_vid}",
-            "isAudioOnly": True
-        }).encode("utf-8")
-        req = _U.Request(
-            "https://music.youtube.com/youtubei/v1/next?prettyPrint=false",
-            data=pl_body,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0",
-                "Origin": "https://music.youtube.com",
-                "Referer": "https://music.youtube.com/"
-            }
-        )
-        with _U.urlopen(req, timeout=3.5, context=_CTX) as r:
-            raw = r.read().decode("utf-8", "ignore")
-            data = _J.loads(raw)
-            # Duyet tat ca playlistPanelVideoRenderer trong YTMusic Automix
-            def _walk_ytm_next(node):
-                if isinstance(node, dict):
-                    if "playlistPanelVideoRenderer" in node:
-                        pvr = node["playlistPanelVideoRenderer"]
-                        v_id = str(pvr.get("videoId") or "")
-                        t_runs = (pvr.get("title") or {}).get("runs") or []
-                        t_str = "".join(str(x.get("text") or "") for x in t_runs).strip()
-                        b_runs = (pvr.get("longBylineText") or pvr.get("shortBylineText") or {}).get("runs") or []
-                        a_str = str(b_runs[0].get("text") or "YouTube Music").strip() if b_runs else "YouTube Music"
-                        l_runs = (pvr.get("lengthText") or {}).get("runs") or []
-                        d_sec = _parse_dur_str(l_runs[0].get("text") if l_runs else "4:00")
-                        thumbs = ((pvr.get("thumbnail") or {}).get("thumbnails") or [])
-                        t_url = str(thumbs[-1].get("url") or "") if thumbs else ""
-                        # Chi nhan bai hat co anh vuong YTMusic (googleusercontent.com) hoac thuoc YTMusic Radio
-                        if not t_url or "googleusercontent.com" in t_url or "ytimg.com" in t_url:
-                            if "googleusercontent.com" not in t_url and v_id in _YTM_THUMB:
-                                t_url = _YTM_THUMB[v_id]
+            )
+            with _U.urlopen(req, timeout=3.0, context=_CTX) as r:
+                data = _J.loads(r.read().decode("utf-8", "ignore"))
+                def _walk_ytm(node):
+                    if isinstance(node, dict):
+                        if "playlistPanelVideoRenderer" in node:
+                            pvr = node["playlistPanelVideoRenderer"]
+                            v_id = str(pvr.get("videoId") or "")
+                            t_runs = (pvr.get("title") or {}).get("runs") or []
+                            t_str = "".join(str(x.get("text") or "") for x in t_runs).strip()
+                            b_runs = (pvr.get("longBylineText") or pvr.get("shortBylineText") or {}).get("runs") or []
+                            a_str = str(b_runs[0].get("text") or "YouTube Music").strip() if b_runs else "YouTube Music"
+                            l_runs = (pvr.get("lengthText") or {}).get("runs") or []
+                            d_sec = _parse_dur_str(l_runs[0].get("text") if l_runs else "4:00")
+                            thumbs = ((pvr.get("thumbnail") or {}).get("thumbnails") or [])
+                            t_url = str(thumbs[-1].get("url") or "") if thumbs else ""
                             _add_ytm_item(v_id, t_str, a_str, d_sec, t_url)
-                    for val in node.values():
-                        _walk_ytm_next(val)
-                elif isinstance(node, list):
-                    for item in node:
-                        _walk_ytm_next(item)
-            _walk_ytm_next(data)
-    except Exception:
-        pass
+                        for val in node.values():
+                            _walk_ytm(val)
+                    elif isinstance(node, list):
+                        for item in node:
+                            _walk_ytm(item)
+                _walk_ytm(data)
+        except Exception:
+            pass
 
-    # Buoc B: Neu YTMusic Radio chua du 22 bai, bo sung bang YTMusic Search voi params "SONGS ONLY" (EgWKAQIIAWoKEAMQBBAJEAoQBQ%3D%3D)
-    if len(out) < 22:
-        clean_art = _RE.sub(r"(?i)\b(official|topic|vevo|channel|music|band)\b", "", str(seed_artist or "")).strip()
-        queries = []
-        if is_vn_seed:
-            queries = [f"{clean_art} bài hát hay nhất", f"nhạc cùng thể loại {seed_title} {clean_art}"]
-        else:
-            queries = [f"{clean_art} greatest hits songs", f"classic songs like {seed_title} {clean_art}"]
-        for q_str in queries:
-            if len(out) >= limit:
-                break
-            try:
-                for s_item in (_ytm_api_search(q_str, limit=20) or []):
-                    if len(out) >= limit:
-                        break
-                    v_id = str(s_item.get("id") or "")
-                    t_str = str(s_item.get("title") or "")
-                    a_str = str(s_item.get("artist") or "")
-                    d_sec = int(s_item.get("duration") or 240) if str(s_item.get("duration", "")).isdigit() else 240
-                    t_url = str(_YTM_THUMB.get(v_id) or "")
-                    _add_ytm_item(v_id, t_str, a_str, d_sec, t_url)
-            except Exception:
-                pass
+    # Luong 2: YTMusic Songs Search cung ca si / cung dong nhac (chay song song de Pool day 45+ bai ma khong ton them thoi gian!)
+    def _task_artist_songs():
+        try:
+            clean_art = _RE.sub(r"(?i)\b(official|topic|vevo|channel|music|band)\b", "", str(seed_artist or "")).strip()
+            q_s = f"{clean_art} tuyển chọn bài hát hay nhất" if is_vn_seed else f"{clean_art} best songs hits"
+            for s_item in (_ytm_api_search(q_s, limit=24) or []):
+                v_id = str(s_item.get("id") or "")
+                t_str = str(s_item.get("title") or "")
+                a_str = str(s_item.get("artist") or "")
+                d_sec = int(s_item.get("duration") or 240) if str(s_item.get("duration", "")).isdigit() else 240
+                t_url = str(_YTM_THUMB.get(v_id) or "")
+                _add_ytm_item(v_id, t_str, a_str, d_sec, t_url)
+        except Exception:
+            pass
 
-    return out[:limit]
+    f1 = _REQ_POOL.submit(_task_radio)
+    f2 = _REQ_POOL.submit(_task_artist_songs)
+    try: f1.result(timeout=3.2)
+    except Exception: pass
+    try: f2.result(timeout=3.2)
+    except Exception: pass
 
-# 2. CHI LAY NHAC TREN YOUTUBE THUONG (KHI CHON VIDEO YOUTUBE) + LOC SACH VIDEO RAC & KHOA NGON NGU!
-def _fetch_pure_yt_video_next_tracks(seed_vid, seed_title, seed_artist, is_vn_seed, limit=25):
+    return out[:pool_limit]
+
+# 2. LAY POOL LON TU YOUTUBE THUONG (KHI CHON VIDEO YOUTUBE) + KHOA NGON NGU & LOC VIDEO RAC!
+def _fetch_pure_yt_video_pool(seed_vid, seed_title, seed_artist, is_vn_seed, pool_limit=48):
     out = []
     seen = {seed_vid}
 
@@ -5629,11 +5606,10 @@ def _fetch_pure_yt_video_next_tracks(seed_vid, seed_title, seed_artist, is_vn_se
             return
         if not tit or _is_non_music_junk(tit, art):
             return
-        # KHOA NGON NGU TUYET DOI: Dang nghe Tieng Anh thi khong bao gio cho video Tieng Viet lot vao!
         item_is_vn = _has_vietnamese(tit) or _has_vietnamese(art)
         if not is_vn_seed and item_is_vn:
             return
-        if is_vn_seed and not item_is_vn and len(out) < 18:
+        if is_vn_seed and not item_is_vn and len(out) < 25:
             return
         if dur_s < 65 or dur_s > 3600:
             return
@@ -5642,13 +5618,12 @@ def _fetch_pure_yt_video_next_tracks(seed_vid, seed_title, seed_artist, is_vn_se
         if sd:
             out.append(sd)
 
-    # Buoc A: Goi YouTube Music Mix Playlist (list=RD{seed_vid}) tren YouTube voi ngon ngu phu hop (en-US cho nhac Anh, vi-VN cho nhac Viet)
     hl_code = "vi-VN,vi;q=0.9" if is_vn_seed else "en-US,en;q=0.9"
     gl_param = "VN" if is_vn_seed else "US"
     try:
         u_mix = f"https://www.youtube.com/watch?v={seed_vid}&list=RD{seed_vid}&hl={'vi' if is_vn_seed else 'en'}&gl={gl_param}"
         req = _U.Request(u_mix, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept-Language": hl_code})
-        with _U.urlopen(req, timeout=3.5, context=_CTX) as r:
+        with _U.urlopen(req, timeout=3.2, context=_CTX) as r:
             html = r.read().decode("utf-8", "ignore")
             m = _RE.search(r"var ytInitialData\s*=\s*(\{.*?\});</script>", html)
             if m:
@@ -5677,14 +5652,11 @@ def _fetch_pure_yt_video_next_tracks(seed_vid, seed_title, seed_artist, is_vn_se
     except Exception:
         pass
 
-    # Buoc B: Neu Mix chua du, tim tren YouTube Search theo dung ngon ngu cua bai hat goc
-    if len(out) < 20:
+    if len(out) < 30:
         clean_art = _RE.sub(r"(?i)\b(official|topic|vevo|channel|music)\b", "", str(seed_artist or "")).strip()
-        q_fb = f"{clean_art} {seed_title[:25]} music" if not is_vn_seed else f"{clean_art} nhạc tuyển chọn"
+        q_fb = f"{clean_art} {seed_title[:25]} music" if not is_vn_seed else f"{clean_art} nhạc hay nhất"
         try:
             for v_item in (_yt_web_search(q_fb, "") or []):
-                if len(out) >= limit:
-                    break
                 v_id = str(v_item.get("id") or "")
                 t_str = str(v_item.get("title") or "")
                 a_str = str(v_item.get("artist") or "")
@@ -5693,35 +5665,25 @@ def _fetch_pure_yt_video_next_tracks(seed_vid, seed_title, seed_artist, is_vn_se
         except Exception:
             pass
 
-    return out[:limit]
+    return out[:pool_limit]
 
-# Ghi de ham _build_endless_yt_album de phan luong 100%:
-# - Neu chon nhac tu YouTube Music -> Danh sach tiep theo CHI lay tu YouTube Music!
-# - Neu chon nhac tu YouTube thuong -> Danh sach tiep theo CHI lay tu YouTube thuong (kem bo loc ngon ngu & chan video rac)!
-_ENDLESS_XML_CACHE = {}
+def _refresh_yt_pool_bg(v, seed_tit, seed_art, is_vn_seed, is_ytm):
+    try:
+        new_p = _fetch_pure_ytm_pool(v, seed_tit, seed_art, is_vn_seed, 50) if is_ytm else _fetch_pure_yt_video_pool(v, seed_tit, seed_art, is_vn_seed, 50)
+        if len(new_p) >= 10:
+            old_p = (_YT_RADIO_POOL_CACHE.get(v) or ([], 0))[0]
+            merged = list(new_p)
+            seen_ids = {x.get("id") for x in merged}
+            for ox in old_p:
+                if ox.get("id") not in seen_ids:
+                    seen_ids.add(ox.get("id"))
+                    merged.append(ox)
+            _YT_RADIO_POOL_CACHE[v] = (merged[:70], _TM.time() + 3600)
+    except Exception:
+        pass
 
+# 3. MOI LAN BAM VAO BAI HAT YOUTUBE O HOME -> XAO TRON NGAY 24 BAI MOI TU POOL TRONG 0.001 GIAY!
 def _build_endless_yt_album(vid, req_album_id=None):
-    clean_ck = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", str(vid or "").strip())
-    now_t = _TM.time()
-    if clean_ck in _ENDLESS_XML_CACHE and _ENDLESS_XML_CACHE[clean_ck][1] > now_t:
-        cached_tracks = _ENDLESS_XML_CACHE[clean_ck][0]
-        seed_s = cached_tracks[0]
-        seed_tit = str(seed_s.get("title") or clean_ck)
-        seed_art = str(seed_s.get("artist") or "YouTube")
-        seed_arid = str(seed_s.get("artistId") or _artist_id(seed_art))
-        total_dur = sum(int(x.get("duration") or 240) for x in cached_tracks if str(x.get("duration", "")).isdigit())
-        rt = _E.Element("subsonic-response", status="ok")
-        al_el = _E.SubElement(
-            rt, "album", id=str(req_album_id or ("al_" + clean_ck)), parent=seed_arid, artistId=seed_arid,
-            isDir="true", name=seed_tit, title=seed_tit, album=seed_tit, artist=seed_art,
-            coverArt="yt36_trk_" + clean_ck, songCount=str(len(cached_tracks)), duration=str(total_dur),
-            created=str(seed_s.get("created") or _now_iso()), year="2026"
-        )
-        for idx, tr in enumerate(cached_tracks, 1):
-            tc = dict(tr); tc["track"] = str(idx)
-            _E.SubElement(al_el, "song", **tc)
-        return rt
-
     clean_v = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", str(vid or "").strip())
     m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
     v = m.group(1) if m else clean_v
@@ -5734,13 +5696,23 @@ def _build_endless_yt_album(vid, req_album_id=None):
     is_vn_seed = _has_vietnamese(seed_tit) or _has_vietnamese(seed_art)
     is_ytm = _is_ytm_track(v)
 
-    if is_ytm:
-        next_tracks = _fetch_pure_ytm_next_tracks(v, seed_tit, seed_art, is_vn_seed, limit=24)
+    now_t = _TM.time()
+    if v in _YT_RADIO_POOL_CACHE and len(_YT_RADIO_POOL_CACHE[v][0]) >= 12:
+        pool_tracks = list(_YT_RADIO_POOL_CACHE[v][0])
+        # Xao tron ngau nhien toan bo Pool ngay tren RAM (0.0005s) de moi lan bam la ra 1 danh sach ke tiep MOI!
+        _RND.shuffle(pool_tracks)
+        next_tracks = pool_tracks[:24]
+        # Am tham bo sung them bai moi vao Pool o duoi nen
+        if _YT_RADIO_POOL_CACHE[v][1] < now_t + 3300:
+            _DL_POOL.submit(_refresh_yt_pool_bg, v, seed_tit, seed_art, is_vn_seed, is_ytm)
     else:
-        next_tracks = _fetch_pure_yt_video_next_tracks(v, seed_tit, seed_art, is_vn_seed, limit=24)
+        pool_tracks = _fetch_pure_ytm_pool(v, seed_tit, seed_art, is_vn_seed, 48) if is_ytm else _fetch_pure_yt_video_pool(v, seed_tit, seed_art, is_vn_seed, 48)
+        _YT_RADIO_POOL_CACHE[v] = (list(pool_tracks), now_t + 3600)
+        shuffled = list(pool_tracks)
+        _RND.shuffle(shuffled)
+        next_tracks = shuffled[:24]
 
     all_tracks = [dict(seed_s)] + [dict(x) for x in next_tracks if x.get("id") != v]
-    _ENDLESS_XML_CACHE[v] = (all_tracks, _TM.time() + 1800)
     total_dur = sum(int(x.get("duration") or 240) for x in all_tracks if str(x.get("duration", "")).isdigit())
 
     al_id_out = str(req_album_id or ("al_" + v))
@@ -5767,33 +5739,159 @@ def _build_endless_yt_album(vid, req_album_id=None):
         _E.SubElement(al_el, "song", **tc)
     return rt
 
-# Cap nhat luon getSimilarSongs / getSimilarSongs2 (khi App xin danh sach Radio tu 1 bai hat) theo dung quy tac YTMusic vs YouTube
-_orig_get_similar_k17 = _get_similar_songs_xml if "_get_similar_songs_xml" in globals() else None
-def _get_similar_songs_xml_v177(sid, count=25, tag_name="similarSongs2"):
-    clean_v = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", str(sid or "").strip())
-    m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
-    if not m or str(sid).startswith("hdd"):
-        if _orig_get_similar_k17:
-            return _orig_get_similar_k17(sid, count, tag_name)
-    v = m.group(1)
-    seed_s = _YL.get(v) or _ensure_vid_meta(v) or {}
-    seed_tit = str(seed_s.get("title") or v)
-    seed_art = str(seed_s.get("artist") or "YouTube")
-    is_vn_seed = _has_vietnamese(seed_tit) or _has_vietnamese(seed_art)
-    if _is_ytm_track(v):
-        tracks = _fetch_pure_ytm_next_tracks(v, seed_tit, seed_art, is_vn_seed, limit=count)
-    else:
-        tracks = _fetch_pure_yt_video_next_tracks(v, seed_tit, seed_art, is_vn_seed, limit=count)
+# 4. KHOI PHUC ENDLESS HDD RADIO SIEU TOC (Sửa triệt để lỗi "Invalid or empty response from server" khi nhấn vào bài HDD!)
+def _get_cached_hdd_pool():
+    now_t = _TM.time()
+    if _HDD_MEM_POOL["songs"] and _HDD_MEM_POOL["ts"] > now_t:
+        return list(_HDD_MEM_POOL["songs"])
+    songs = _get_all_hdd_songs()
+    if songs:
+        _HDD_MEM_POOL["songs"] = songs
+        _HDD_MEM_POOL["ts"] = now_t + 600
+    return list(songs)
+
+def _norm_hdd_song_node(d):
+    sc = dict(d)
+    raw_sid = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(sc.get("id") or ""))
+    raw_alid = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(sc.get("albumId") or sc.get("parent") or raw_sid))
+    raw_arid = _RE.sub(r"^(hdd\d*_|hdd_|ar_|ar-)+", "", str(sc.get("artistId") or "ar"))
+    if raw_alid and raw_sid:
+        _ART_MAP[raw_sid] = raw_alid
+    sc["id"] = "hdd_" + raw_sid
+    sc["albumId"] = "hdd_al_" + raw_sid
+    sc["parent"] = "hdd_al_" + raw_sid
+    sc["artistId"] = "hdd_" + raw_arid
+    sc["coverArt"] = "hdd36_trk_" + raw_sid
+    sc["isDir"] = "false"
+    sc["type"] = "music"
+    return sc
+
+def _build_endless_hdd_mix(req_id):
+    raw_id = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-|trk_)+", "", str(req_id or "").strip())
+    all_hdd = _get_cached_hdd_pool()
+
+    album_tracks = []
+    seed_song = None
+
+    # A. Thu lay Album that tu Navidrome HDD (neu req_id la ma Album cua Navidrome)
+    if _HDD and raw_id:
+        try:
+            hq = [x for x in _hdd_q([("id", raw_id)]) if x[0] != "f"]
+            with _U.urlopen(_U.Request(f"{_HDD}/rest/getAlbum.view?{_ue(hq)}", headers={"User-Agent": "Resonus"}), timeout=2.5, context=_CTX) as r:
+                hrt = _E.fromstring(r.read())
+                if hrt.attrib.get("status") == "ok":
+                    for x in hrt.iter():
+                        if x.tag in ("song", "child", "entry") and x.attrib.get("isDir") != "true" and x.attrib.get("id"):
+                            album_tracks.append(_norm_hdd_song_node(x.attrib))
+        except Exception:
+            pass
+
+    # B. Neu req_id la ma Bai hat HDD (do _patched_fmt_k16 gan albumId = hdd_al_<song_id>) -> Tim bai hat do lam bai so 1!
+    if not album_tracks:
+        for hs in all_hdd:
+            hs_raw = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(hs.get("id") or ""))
+            if hs_raw == raw_id:
+                seed_song = _norm_hdd_song_node(hs)
+                break
+        if not seed_song and raw_id:
+            d_single = _fetch_single_hdd_meta(raw_id)
+            if d_single and d_single.get("id"):
+                seed_song = _norm_hdd_song_node(d_single)
+        if seed_song:
+            album_tracks = [seed_song]
+
+    if not album_tracks and all_hdd:
+        picked = list(all_hdd)
+        _RND.shuffle(picked)
+        album_tracks = [_norm_hdd_song_node(picked[0])]
+
+    if not album_tracks:
+        return None
+
+    first_s = album_tracks[0]
+    first_art = str(first_s.get("artist") or "").strip().lower()
+    seen_sids = {_RE.sub(r"^(hdd\d*_|hdd_)+", "", str(x.get("id") or "")) for x in album_tracks}
+
+    # C. Moi lan bam vao bai HDD -> Xao tron va noi them 24 bai HDD ke tiep (Uu tien cung ca si truoc, sau do ngau nhien trong kho HDD!)
+    same_artist_pool = []
+    other_hdd_pool = []
+    for hs in all_hdd:
+        hs_raw = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(hs.get("id") or ""))
+        if not hs_raw or hs_raw in seen_sids:
+            continue
+        if first_art and str(hs.get("artist") or "").strip().lower() == first_art:
+            same_artist_pool.append(hs)
+        else:
+            other_hdd_pool.append(hs)
+
+    _RND.shuffle(same_artist_pool)
+    _RND.shuffle(other_hdd_pool)
+
+    extra_needed = max(0, 25 - len(album_tracks))
+    chosen_extra = (same_artist_pool[:10] + other_hdd_pool)[:extra_needed]
+    _RND.shuffle(chosen_extra)
+
+    for ex in chosen_extra:
+        album_tracks.append(_norm_hdd_song_node(ex))
+
+    total_dur = sum(int(x.get("duration") or 240) for x in album_tracks if str(x.get("duration", "")).isdigit())
+    first_raw = _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(first_s.get("id") or raw_id))
+    tit_out = str(first_s.get("title") or first_s.get("album") or "HDD Lossless")
+    art_out = str(first_s.get("artist") or "HDD Artist")
+    arid_out = str(first_s.get("artistId") or "hdd_ar")
+
     rt = _E.Element("subsonic-response", status="ok")
-    sim_el = _E.SubElement(rt, tag_name)
-    for tr in tracks:
-        _E.SubElement(sim_el, "song", **dict(tr))
+    al_el = _E.SubElement(
+        rt, "album",
+        id=str(req_id),
+        parent=arid_out,
+        artistId=arid_out,
+        isDir="true",
+        name=tit_out,
+        title=tit_out,
+        album=tit_out,
+        artist=art_out,
+        coverArt="hdd36_trk_" + first_raw,
+        songCount=str(len(album_tracks)),
+        duration=str(total_dur),
+        created="2026-01-01T00:00:00.000Z",
+        year="2026"
+    )
+    for idx, tr in enumerate(album_tracks, 1):
+        tc = dict(tr)
+        tc["track"] = str(idx)
+        _E.SubElement(al_el, "song", **tc)
     return rt
 
-_get_similar_songs_xml = _get_similar_songs_xml_v177
+def _get_similar_songs_xml_v180(sid, count=25, tag_name="similarSongs2"):
+    s_str = str(sid or "").strip()
+    if s_str.startswith("hdd"):
+        rt_hdd = _build_endless_hdd_mix(s_str)
+        rt = _E.Element("subsonic-response", status="ok")
+        sim_el = _E.SubElement(rt, tag_name)
+        if rt_hdd is not None:
+            for x in rt_hdd.iter():
+                if x.tag == "song":
+                    _E.SubElement(sim_el, "song", **dict(x.attrib))
+        return rt
+
+    clean_v = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", s_str)
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
+    if not m:
+        return _E.Element("subsonic-response", status="ok")
+    v = m.group(1)
+    rt_yt = _build_endless_yt_album(v)
+    rt = _E.Element("subsonic-response", status="ok")
+    sim_el = _E.SubElement(rt, tag_name)
+    for idx, x in enumerate(rt_yt.iter()):
+        if x.tag == "song" and idx > 0:
+            _E.SubElement(sim_el, "song", **dict(x.attrib))
+    return rt
+
+_get_similar_songs_xml = _get_similar_songs_xml_v180
 
 @app.middleware("http")
-async def _k18_strict_radio_mw(req, call_next):
+async def _k18_dynamic_radio_and_hdd_mw(req, call_next):
     p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
     if not pl.startswith("/rest/"):
         return await call_next(req)
@@ -5806,23 +5904,41 @@ async def _k18_strict_radio_mw(req, call_next):
 
     lp = _A.get_running_loop()
 
-    # Bat getAlbum cho bài YouTube để dùng bộ lọc YTMusic vs YouTube + Khóa ngôn ngữ Anh/Việt mới
-    if "/getalbum" in pl and "getalbumlist" not in pl:
+    # 1. Bat getAlbum & getMusicDirectory cho CA HDD LAN YOUTUBE:
+    # - Neu la HDD (hdd_...): Tra ve 25 bai HDD Lossless (Bai dang chon + 24 bai HDD xao tron ngau nhien!)
+    # - Neu la YouTube/YTMusic: Tra ve 25 bai (Bai dang chon + 24 bai xao tron ngau nhien tu Pool 50 bai!)
+    if ("/getalbum" in pl and "getalbumlist" not in pl) or "/getmusicdirectory" in pl:
         aid = str(qd.get("id") or "").strip()
-        if aid and not aid.startswith("hdd") and not aid.startswith("pl_"):
-            clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", aid)
-            if _RE.match(r"^[A-Za-z0-9_-]{11}$", clean_v):
-                rt = await lp.run_in_executor(_REQ_POOL, _build_endless_yt_album, clean_v, aid)
-                return _fmt(rt, js, cb)
+        if aid and not aid.startswith("pl_"):
+            if aid.startswith("hdd"):
+                rt = await lp.run_in_executor(_REQ_POOL, _build_endless_hdd_mix, aid)
+                if rt is not None:
+                    if "/getmusicdirectory" in pl:
+                        for x in rt.iter():
+                            if x.tag == "album": x.tag = "directory"
+                            elif x.tag == "song": x.tag = "child"
+                    return _fmt(rt, js, cb)
+            else:
+                clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", aid)
+                if _RE.match(r"^[A-Za-z0-9_-]{11}$", clean_v):
+                    rt = await lp.run_in_executor(_REQ_POOL, _build_endless_yt_album, clean_v, aid)
+                    if "/getmusicdirectory" in pl:
+                        for x in rt.iter():
+                            if x.tag == "album": x.tag = "directory"
+                            elif x.tag == "song": x.tag = "child"
+                    return _fmt(rt, js, cb)
 
+    # 2. Bat getSimilarSongs / getSimilarSongs2 cho ca HDD va YouTube
     if "getsimilarsongs" in pl:
         sid = str(qd.get("id") or "").strip()
         cnt = int(qd.get("count") or 25) if str(qd.get("count", "")).isdigit() else 25
         tg = "similarSongs2" if "2" in pl else "similarSongs"
-        if sid and not sid.startswith("hdd"):
-            rt = await lp.run_in_executor(_REQ_POOL, _get_similar_songs_xml_v177, sid, cnt, tg)
+        if sid:
+            rt = await lp.run_in_executor(_REQ_POOL, _get_similar_songs_xml_v180, sid, cnt, tg)
             return _fmt(rt, js, cb)
 
     return await call_next(req)
 
+# Nap san kho nhac HDD vao RAM ngay khi khoi dong de bam vao bai HDD la len 25 bai trong 0.001 giay!
+_DL_POOL.submit(_get_cached_hdd_pool)
 _SCACHE.clear()
