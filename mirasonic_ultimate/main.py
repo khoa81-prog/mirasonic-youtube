@@ -4770,7 +4770,7 @@ async def _k15_user_isolation_mw(req, call_next):
         _CUR_USER_CTX.reset(tok)
 
 _SCACHE.clear()
-# --- K16: V1.6.5 STRICT SINGLE-TRACK ARTWORK (FORCE WAVIO UI REFRESH ON MINIMIZE/RESUME) ---
+# --- K16: V1.6.8 FEATHERLIGHT SINGLE-TRACK ARTWORK (ACTIVE-TRACK PRIORITY FOR WAVIO) ---
 try:
     from PIL import Image as _PIL_IMG
     _HAS_PIL = True
@@ -4779,9 +4779,8 @@ except Exception:
 
 _ART_DIR = "/data/art_cache_v35" if _OS.path.isdir("/data") else "/tmp/art_cache_v35"
 _OS.makedirs(_ART_DIR, exist_ok=True)
-_ART_RAM.clear()
-_FAST_ART_POOL = _CF.ThreadPoolExecutor(max_workers=8)
-_CUR_PLAYING_ART_ID = {"id": ""}
+_FAST_ART_POOL = _CF.ThreadPoolExecutor(max_workers=6)
+_ACTIVE_VID = {"id": ""}
 
 def _fix_url_500(u):
     u = str(u or "").strip()
@@ -4789,107 +4788,64 @@ def _fix_url_500(u):
         u = "https:" + u
     if "yt3.ggpht.com" in u or "googleusercontent.com" in u:
         u = _RE.sub(r"=s\d+[^/]*$", "=s500-c-k-c0x00ffffff-no-rj", u)
-        u = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l92-rj", u)
+        u = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l90-rj", u)
     return u
 
-def _crop_500_square(d, mode="square"):
+def _crop_500_ram(d, mode="square"):
     if not d or len(d) < 250:
         return None
     if mode == "square" and d.startswith(b"\xff\xd8") and len(d) < 95000:
         return d
 
+    # Xu ly 100% tren RAM bang PIL (chi mat 0.003 giay, KHONG BAO GIO GOI FFMPEG lam nang may!)
     if _HAS_PIL:
         try:
             im = _PIL_IMG.open(_IO.BytesIO(d)).convert("RGB")
             w, h = im.size
-            if mode == "hq43":
-                h_169 = int(w * 9 / 16)
-                if h > h_169:
-                    top = (h - h_169) // 2
-                    im = im.crop((0, top, w, top + h_169))
-                    w, h = im.size
+            if mode == "hq43" and w == 480 and h == 360:
+                # Cat bo 2 vien den 45px tren/duoi cua hqdefault.jpg (lay vung 480x270 o giua)
+                im = im.crop((0, 45, 480, 315))
+                w, h = im.size
             side = min(w, h)
             left = (w - side) // 2
             top = (h - side) // 2
             im = im.crop((left, top, left + side, top + side))
             if side != 500:
-                im = im.resize((500, 500), getattr(_PIL_IMG, "Resampling", _PIL_IMG).LANCZOS)
+                im = im.resize((500, 500), getattr(_PIL_IMG, "Resampling", _PIL_IMG).BILINEAR)
             buf = _IO.BytesIO()
-            im.save(buf, format="JPEG", quality=88, optimize=True)
+            im.save(buf, format="JPEG", quality=85)
             out_b = buf.getvalue()
             if len(out_b) > 300:
                 return out_b
         except Exception:
             pass
 
-    tid = f"{_TH.get_ident()}_{_RND.randint(1000,9999)}"
-    fin = f"/tmp/art_in_{tid}.img"
-    fout = f"/tmp/art_out_{tid}.jpg"
-    try:
-        open(fin, "wb").write(d)
-        if mode == "maxres":
-            vf = "scale=890:500:force_original_aspect_ratio=increase,crop=500:500"
-        elif mode == "hq43":
-            vf = "crop=iw:iw*9/16:0:(ih-iw*9/16)/2,scale=890:500:force_original_aspect_ratio=increase,crop=500:500"
-        else:
-            vf = "scale=500:500:force_original_aspect_ratio=increase,crop=500:500"
-
-        p = _SP.run([
-            "ffmpeg", "-y", "-loglevel", "error", "-threads", "1", "-i", fin,
-            "-frames:v", "1", "-vf", vf,
-            "-pix_fmt", "yuvj420p", "-strict", "-2",
-            "-map_metadata", "-1", "-q:v", "3", fout
-        ], stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=3.0)
-        if p.returncode == 0 and _OS.path.exists(fout) and _OS.path.getsize(fout) > 300:
-            out_b = open(fout, "rb").read()
-            if out_b.startswith(b"\xff\xd8"):
-                return out_b
-    except Exception:
-        pass
-    finally:
-        for fp in (fin, fout):
-            try:
-                if _OS.path.exists(fp):
-                    _OS.remove(fp)
-            except Exception:
-                pass
     return d if d.startswith(b"\xff\xd8") else None
 
-def _fetch_yt_500_vid(vid):
+def _fetch_yt_500_light(vid):
     if not _RE.match(r"^[A-Za-z0-9_-]{11}$", str(vid or "")):
         return None
+    # 1. Neu la bai YouTube Music co san anh vuong -> Tai thang anh 500x500 (~25KB, 0% CPU)
     if vid in _YTM_THUMB:
         tu = _fix_url_500(_YTM_THUMB[vid])
         d = _dl_fast(tu, 400, 1.2)
         if d:
-            jpg = _crop_500_square(d, "square")
+            jpg = _crop_500_ram(d, "square")
             if jpg:
                 return jpg
 
-    f_max = _FAST_ART_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 1800, 0.75)
-    f_hq  = _FAST_ART_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 600, 1.2)
-
-    try:
-        d_max = f_max.result(timeout=0.8)
+    # 2. Chi khi la BAI DANG PHAT (_ACTIVE_VID) thi moi thu lay maxresdefault.
+    # Cac bai khac trong danh sach chi lay duy nhat hqdefault (~18KB) cat tren RAM trong 3ms -> Sieu nhe!
+    if vid == _ACTIVE_VID.get("id"):
+        d_max = _dl_fast(f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 1800, 0.55)
         if d_max:
-            jpg = _crop_500_square(d_max, "maxres")
+            jpg = _crop_500_ram(d_max, "maxres")
             if jpg:
                 return jpg
-    except Exception:
-        pass
 
-    try:
-        d_hq = f_hq.result(timeout=1.2)
-        if d_hq:
-            jpg = _crop_500_square(d_hq, "hq43")
-            if jpg:
-                return jpg
-    except Exception:
-        pass
-
-    d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 400, 1.0)
-    if d_mq:
-        return _crop_500_square(d_mq, "maxres")
+    d_hq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 500, 1.1)
+    if d_hq:
+        return _crop_500_ram(d_hq, "hq43")
     return None
 
 def _norm_art_key(cid):
@@ -4929,21 +4885,15 @@ def _get_art_600(cid):
         cf = _OS.path.join(_ART_DIR, _H.md5(ckey.encode()).hexdigest() + ".jpg")
         if _OS.path.exists(cf) and _OS.path.getsize(cf) > 300:
             d = open(cf, "rb").read()
-            if len(_ART_RAM) < 300:
+            if len(_ART_RAM) < 400:
                 _ART_RAM[ckey] = d
             return d
 
         if kind == "ar":
-            if k_id not in _ARTIST_THUMB:
-                aname = _resolve_artist_name(k_id)
-                if aname:
-                    _yt_web_search(aname, "")
-                    if k_id not in _ARTIST_THUMB:
-                        _ytm_search_artists_and_pls(aname)
             tu = _ARTIST_THUMB.get(k_id, "")
             if tu:
-                d = _dl_fast(_fix_url_500(tu), 300, 1.5)
-                jpg = _crop_500_square(d, "square")
+                d = _dl_fast(_fix_url_500(tu), 300, 1.2)
+                jpg = _crop_500_ram(d, "square")
                 if jpg:
                     open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
             return None
@@ -4953,40 +4903,30 @@ def _get_art_600(cid):
             if tu:
                 m_vi = _RE.search(r"/vi/([A-Za-z0-9_-]{11})/", tu)
                 if m_vi:
-                    jpg = _fetch_yt_500_vid(m_vi.group(1))
+                    jpg = _fetch_yt_500_light(m_vi.group(1))
                     if jpg:
                         open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
-                d = _dl_fast(_fix_url_500(tu), 300, 1.5)
-                jpg = _crop_500_square(d, "hq43" if "hqdefault" in tu else "square")
-                if jpg:
-                    open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
-            tr_list = _PL_TRACKS_CACHE.get(k_id) or _yt_playlist_tracks(k_id)
-            if tr_list and tr_list[0].get("id"):
-                jpg = _fetch_yt_500_vid(tr_list[0]["id"])
+                d = _dl_fast(_fix_url_500(tu), 300, 1.2)
+                jpg = _crop_500_ram(d, "hq43" if "hqdefault" in tu else "square")
                 if jpg:
                     open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
             return None
 
         if kind == "hdd" and _HDD:
-            # Uu tien lay anh nhung rieng cua tung file nhac (raw_id) truoc khi lay anh chung cua Album!
-            cands = []
-            for x in [raw_id, k_id, "al-" + k_id, "mf-" + raw_id, "al-" + raw_id]:
-                if x and x not in cands:
-                    cands.append(x)
-            for cand in cands:
+            for cand in [raw_id, k_id, "al-" + k_id]:
+                if not cand:
+                    continue
                 try:
                     cq = [x for x in _hdd_q([("id", cand), ("size", "500")]) if x[0] != "f"]
-                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent": "Resonus"}), timeout=2.5, context=_CTX) as r:
+                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent": "Resonus"}), timeout=2.0, context=_CTX) as r:
                         d = r.read()
                         if r.status == 200 and len(d) > 300 and not d.lstrip().startswith(b"<"):
-                            jpg = _crop_500_square(d, "square")
-                            if jpg:
-                                open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+                            open(cf, "wb").write(d); _ART_RAM[ckey] = d; return d
                 except Exception:
                     pass
 
         if _RE.match(r"^[A-Za-z0-9_-]{11}$", k_id):
-            jpg = _fetch_yt_500_vid(k_id)
+            jpg = _fetch_yt_500_light(k_id)
             if jpg:
                 open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
     return None
@@ -4994,7 +4934,6 @@ def _get_art_600(cid):
 def _get_art_bytes(cid, req_size=0):
     return _get_art_600(cid)
 
-# XOA BO 100% PRELOAD: Khong tai truoc bat ky bai nao khi mo danh sach!
 def _prewarm_list(ids):
     return
 
@@ -5006,14 +4945,11 @@ def _patched_fmt_k16(rt, js, cb=None):
         sid = str(a.get("id") or "")
         ca = str(a.get("coverArt") or "")
         if x.tag in ("song", "child", "entry") and a.get("isDir") != "true":
-            # BI QUYET CHONG KET COVER KHI MINIMIZE TREN WAVIO:
-            # Gan cho MOI BAI HAT mot ma coverArt & albumId DOC LAP theo chinh ID cua bai hat do!
-            # Khi qua bai moi va mo lai App tu Minimize, Wavio thay albumId & coverArt thay doi 100% nen buoc phai ve lai Cover moi!
             if sid.startswith("hdd"):
                 alid = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(a.get("albumId") or a.get("parent") or ""))
                 rid_clean = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", sid)
                 if alid and rid_clean:
-                    _ART_MAP[rid_clean] = rid_clean
+                    _ART_MAP[rid_clean] = alid
                 a["coverArt"] = "hdd35_trk_" + rid_clean
                 a["albumId"] = "hdd_al_" + rid_clean
                 a["parent"] = "hdd_al_" + rid_clean
@@ -5050,36 +4986,30 @@ async def _k16_ondemand_art_mw(req, call_next):
     qd = dict(qi)
     lp = _A.get_running_loop()
 
-    # 1. Tra anh 500x500 voi Cache-Control: no-cache de khi mo lai App tu Minimize, Wavio LUON cap nhat anh cua bai dang hat!
+    # 1. Tra anh sieu nhe (0% ffmpeg, cat bang PIL tren RAM trong 3ms) + Cache 24h de Wavio khong tai lai anh da co!
     if "/getcoverart" in pl:
         cid = str(qd.get("id") or "").strip()
         d = await lp.run_in_executor(_FAST_ART_POOL, _get_art_600, cid) if cid else None
         if d:
-            etag = f'"{_H.md5((cid + str(len(d))).encode()).hexdigest()}"'
             return _R(
                 content=d,
                 media_type="image/jpeg",
                 headers={
                     **_CORS,
                     "Content-Length": str(len(d)),
-                    "Cache-Control": "no-cache, must-revalidate",
-                    "ETag": etag
+                    "Cache-Control": "public, max-age=86400"
                 }
             )
-        return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1)), "Cache-Control": "no-store"})
+        return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1))})
 
-    # 2. Choi bai nao CHI LOAD DUNG COVER BAI DO (Zero background preload!)
+    # 2. Khi Play nhac: Chi danh dau va tai anh cho DUNG 1 BAI DANG PHAT (Non-blocking, sieu nhe!)
     if "/stream" in pl or "/download" in pl:
         sid = str(qd.get("id") or "").strip()
         rng = req.headers.get("range") or req.headers.get("Range") or ""
         if sid and ((not rng) or rng.startswith("bytes=0-")):
-            _CUR_PLAYING_ART_ID["id"] = sid
-            kind, k_id, _ = _norm_art_key(sid)
-            if f"{kind}_{k_id}" not in _ART_RAM:
-                try:
-                    await _A.wait_for(lp.run_in_executor(_FAST_ART_POOL, _get_art_600, sid), timeout=0.35)
-                except Exception:
-                    pass
+            _, k_id, _ = _norm_art_key(sid)
+            _ACTIVE_VID["id"] = k_id
+            _FAST_ART_POOL.submit(_get_art_600, sid)
 
     return await call_next(req)
 
@@ -5390,291 +5320,3 @@ async def _k17_private_playlists_mw(req, call_next):
 _SCACHE.clear()
 
 
-# --- K18: V1.6.7 FIX AURORA "LISTENING HISTORY COULD NOT SYNC" (FULL SUBSONIC + NAVIDROME HISTORY SCHEMA) ---
-_LSTS.update({
-    "musicFolder", "index", "artist", "album", "song", "child",
-    "entry", "playlist", "genre", "structuredLyrics", "line",
-    "openSubsonicExtensions", "versions", "bookmark"
-})
-_INTS.update({
-    "size", "duration", "bitRate", "track", "discNumber", "year",
-    "playCount", "songCount", "albumCount", "offset", "start",
-    "samplingRate", "bitDepth", "channelCount", "userRating",
-    "position", "minutesAgo", "playerId"
-})
-
-def _sanitize_song_for_aurora(sd, played_ts="", play_cnt="1"):
-    sc = dict(sd)
-    raw_id = str(sc.get("id") or "")
-    if not raw_id.startswith("hdd"):
-        vid_c = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", raw_id)
-        sc["id"] = vid_c
-        sc["parent"] = "al_" + vid_c
-        sc["albumId"] = "al_" + vid_c
-        sc["isDir"] = "false"
-        sc["type"] = "music"
-        sc["isVideo"] = "false"
-        sc["suffix"] = "m4a"
-        sc["contentType"] = "audio/mp4"
-        sc["bitRate"] = "256"
-        sc["samplingRate"] = "44100"
-        sc["bitDepth"] = "16"
-        sc["channelCount"] = "2"
-    sc["playCount"] = str(play_cnt) if str(play_cnt).isdigit() else "1"
-    sc["played"] = str(played_ts or _now_iso())
-    sc["created"] = str(sc.get("created") or "2026-01-01T00:00:00.000Z")
-    sc["year"] = str(sc.get("year") or "2026") if str(sc.get("year", "")).isdigit() else "2026"
-    sc["duration"] = str(sc.get("duration") or "240") if str(sc.get("duration", "")).isdigit() else "240"
-    sc["track"] = str(sc.get("track") or "1") if str(sc.get("track", "")).isdigit() else "1"
-    return sc
-
-def _build_aurora_playqueue(u):
-    u_prof = _get_u_prof(u)
-    q_data = u_prof.get("queue") or {}
-    q_ids = list(q_data.get("ids") or [])
-    rt = _E.Element("subsonic-response", status="ok")
-
-    if not q_ids:
-        rec = u_prof.get("recent") or []
-        for r_item in rec[:15]:
-            if r_item.startswith("yt:"):
-                q_ids.append(r_item[3:])
-            elif r_item.startswith("hdd:"):
-                hm = (u_prof.get("hdd_meta") or {}).get(r_item) or {}
-                if hm.get("seedSongId"):
-                    q_ids.append(hm["seedSongId"])
-
-    resolved = []
-    for qid in q_ids[:80]:
-        sd = _resolve_any_song_dict(qid)
-        if sd and sd.get("id"):
-            resolved.append(_sanitize_song_for_aurora(sd))
-
-    cur_id = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", str(q_data.get("current") or ""))
-    if not cur_id and resolved:
-        cur_id = resolved[0]["id"]
-    pos_v = str(q_data.get("position") or "0")
-    if not pos_v.isdigit():
-        pos_v = "0"
-
-    pq_attrs = {
-        "username": u,
-        "changed": str(q_data.get("changed") or _now_iso()),
-        "changedBy": str(q_data.get("changedBy") or "Aurora"),
-        "position": pos_v
-    }
-    if cur_id:
-        pq_attrs["current"] = cur_id
-
-    pq_el = _E.SubElement(rt, "playQueue", **pq_attrs)
-    for sd in resolved:
-        _E.SubElement(pq_el, "entry", **sd)
-    return rt
-
-def _build_aurora_nowplaying(u):
-    u_prof = _get_u_prof(u)
-    rt = _E.Element("subsonic-response", status="ok")
-    np_el = _E.SubElement(rt, "nowPlaying")
-    lp_info = u_prof.get("last_play") or {}
-    sid = lp_info.get("id") or ""
-    if sid:
-        sd = _resolve_any_song_dict(sid)
-        if sd and sd.get("id"):
-            ent = _sanitize_song_for_aurora(sd)
-            ent["username"] = u
-            ent["minutesAgo"] = "0"
-            ent["playerId"] = "1"
-            ent["playerName"] = "Aurora"
-            _E.SubElement(np_el, "entry", **ent)
-    return rt
-
-def _build_aurora_getsong(u, sid):
-    u_prof = _get_u_prof(u)
-    clean_s = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", str(sid or "").strip())
-    sd = _resolve_any_song_dict(clean_s if not str(sid).startswith("hdd") else sid)
-    if not sd or not sd.get("id"):
-        return None
-    item_k = f"hdd:{sid}" if str(sid).startswith("hdd") else f"yt:{clean_s}"
-    p_cnt = str((u_prof.get("counts") or {}).get(item_k, 1))
-    p_ts = (u_prof.get("ts") or {}).get(item_k) or _now_iso()
-    sc = _sanitize_song_for_aurora(sd, played_ts=p_ts, play_cnt=p_cnt)
-    rt = _E.Element("subsonic-response", status="ok")
-    _E.SubElement(rt, "song", **sc)
-    return rt
-
-def _build_aurora_native_songs_json(u):
-    u_prof = _get_u_prof(u)
-    rec = list(u_prof.get("recent") or [])
-    out = []
-    for item_k in rec[:40]:
-        p_cnt = int((u_prof.get("counts") or {}).get(item_k, 1))
-        p_ts = (u_prof.get("ts") or {}).get(item_k) or _now_iso()
-        if item_k.startswith("yt:"):
-            vid = item_k[3:]
-            sd = _resolve_any_song_dict(vid)
-            if sd and sd.get("id"):
-                out.append({
-                    "id": vid,
-                    "title": sd.get("title") or vid,
-                    "artist": sd.get("artist") or "YouTube",
-                    "artistId": sd.get("artistId") or "ar_yt",
-                    "album": sd.get("album") or sd.get("title") or vid,
-                    "albumId": "al_" + vid,
-                    "duration": int(sd.get("duration") or 240) if str(sd.get("duration", "")).isdigit() else 240,
-                    "bitRate": 256,
-                    "sampleRate": 44100,
-                    "bitDepth": 16,
-                    "channels": 2,
-                    "suffix": "m4a",
-                    "playCount": p_cnt,
-                    "playDate": p_ts,
-                    "starred": False
-                })
-    return out
-
-@app.middleware("http")
-async def _k18_aurora_sync_mw(req, call_next):
-    if req.method == "OPTIONS":
-        return _R(content=b"", status_code=200, headers=_CORS)
-    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
-
-    # 1. Ho tro POST-to-GET Bridge toan dien: Chuyen body form-urlencoded/JSON cua Aurora vao query_string de MỌI middleware ben duoi deu doc duoc!
-    if req.method == "POST" and pl.startswith("/rest/"):
-        bf = await req.body()
-        if bf:
-            try:
-                extra = [(str(k), str(v)) for k, v in _J.loads(bf).items()] if bf.strip().startswith(b"{") else _pq(bf.decode("utf-8", "ignore"), keep_blank_values=True)
-                old_qs = req.scope.get("query_string", b"").decode("utf-8", "ignore")
-                new_qs = (old_qs + "&" + _ue(extra)).lstrip("&")
-                req.scope["query_string"] = new_qs.encode("utf-8")
-            except Exception:
-                pass
-        async def _rc():
-            return {"type": "http.request", "body": bf, "more_body": False}
-        req._receive = _rc
-
-    # 2. Ho tro cong Native Navidrome REST API (/api/song, /api/album, /api/keepalive...) cho Aurora!
-    if pl.startswith("/api/"):
-        qi_api = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
-        qd_api = dict(qi_api)
-        uname_api = str(qd_api.get("u") or req.headers.get("x-nd-user") or "admin").strip().lower() or "admin"
-        if "keepalive" in pl:
-            return _R(content=_J.dumps({"response": "ok", "id": "mirasonic"}), media_type="application/json", headers=_CORS)
-        if "/auth/login" in pl or "/login" in pl:
-            bf = await req.body()
-            try:
-                jd = _J.loads(bf.decode("utf-8", "ignore"))
-                uname_api = str(jd.get("username") or "admin").strip().lower()
-            except Exception:
-                pass
-            return _R(
-                content=_J.dumps({
-                    "id": uname_api, "name": uname_api, "username": uname_api,
-                    "isAdmin": True, "subsonicSalt": "mira", "subsonicToken": "mira", "token": "mira_jwt_token"
-                }),
-                media_type="application/json",
-                headers=_CORS
-            )
-        if "/api/song" in pl:
-            lp = _A.get_running_loop()
-            s_list = await lp.run_in_executor(_REQ_POOL, _build_aurora_native_songs_json, uname_api)
-            hdr_api = {**_CORS, "X-Total-Count": str(len(s_list)), "Access-Control-Expose-Headers": "X-Total-Count"}
-            return _R(content=_J.dumps(s_list), media_type="application/json", headers=hdr_api)
-        hdr_api = {**_CORS, "X-Total-Count": "0", "Access-Control-Expose-Headers": "X-Total-Count"}
-        return _R(content="[]", media_type="application/json", headers=hdr_api)
-
-    if not pl.startswith("/rest/"):
-        return await call_next(req)
-
-    _load_addon_opts()
-    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
-    qd = dict(qi); fv = qd.get("f", "").lower()
-    js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
-    cb = qd.get("callback") if fv == "jsonp" else None
-    if not _check_auth(qd):
-        return await call_next(req)
-
-    uname = str(qd.get("u") or "admin").strip().lower() or "admin"
-    lp = _A.get_running_loop()
-
-    # 3. Xu ly Scrobble da luong (Ho tro nhieu tham so id=...&time=... cung luc khi Aurora sync lich su offline/online)
-    if "/scrobble" in pl:
-        s_ids = [str(v).strip() for k, v in qi if k == "id" and str(v).strip()]
-        subm = str(qd.get("submission") or "true").lower() != "false"
-        tok = _CUR_USER_CTX.set(uname)
-        try:
-            for sid in s_ids:
-                clean_s = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", sid)
-                if sid.startswith("hdd"):
-                    _DL_POOL.submit(_record_hdd_play_for_user, uname, sid)
-                elif subm:
-                    _record_yt_play(clean_s, False)
-        finally:
-            _CUR_USER_CTX.reset(tok)
-        rt = _E.Element("subsonic-response", status="ok")
-        return _fmt(rt, js, cb)
-
-    # 4. Xu ly getSong (Khi Aurora dong bo tung bai hat trong lich su nghe)
-    if "/getsong" in pl and "getsongs" not in pl and "similarsongs" not in pl and "topsongs" not in pl:
-        sid = str(qd.get("id") or "").strip()
-        if sid and not sid.startswith("hdd"):
-            rt = await lp.run_in_executor(_REQ_POOL, _build_aurora_getsong, uname, sid)
-            if rt is not None:
-                return _fmt(rt, js, cb)
-
-    # 5. Xu ly getPlayQueue & savePlayQueue (ho tro ca savePlayQueueByIndex)
-    if "getplayqueue" in pl:
-        rt = await lp.run_in_executor(_REQ_POOL, _build_aurora_playqueue, uname)
-        return _fmt(rt, js, cb)
-
-    if "saveplayqueue" in pl:
-        u_prof = _get_u_prof(uname)
-        q_ids = [_RE.sub(r"^(yt\d*_|al_|trk_)+", "", str(v).strip()) if not str(v).strip().startswith("hdd") else str(v).strip() for k, v in qi if k == "id" and str(v).strip()]
-        cur_item = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", str(qd.get("current") or "")) if not str(qd.get("current") or "").startswith("hdd") else str(qd.get("current") or "")
-        if "byindex" in pl and str(qd.get("currentIndex", "")).isdigit():
-            c_idx = int(qd.get("currentIndex"))
-            if 0 <= c_idx < len(q_ids):
-                cur_item = q_ids[c_idx]
-        if not cur_item and q_ids:
-            cur_item = q_ids[0]
-        u_prof["queue"] = {
-            "current": cur_item,
-            "position": str(qd.get("position") or "0") if str(qd.get("position") or "0").isdigit() else "0",
-            "ids": q_ids[:100],
-            "changed": _now_iso(),
-            "changedBy": str(qd.get("c") or "Aurora")
-        }
-        _DL_POOL.submit(_save_user_profiles)
-        rt = _E.Element("subsonic-response", status="ok")
-        return _fmt(rt, js, cb)
-
-    if "getnowplaying" in pl:
-        rt = await lp.run_in_executor(_REQ_POOL, _build_aurora_nowplaying, uname)
-        return _fmt(rt, js, cb)
-
-    if "getuser" in pl:
-        rt = _E.Element("subsonic-response", status="ok")
-        u_el = _E.SubElement(
-            rt, "user",
-            username=uname, email=f"{uname}@nhacuakhoa.online",
-            scrobblingEnabled="true", adminRole="true", settingsRole="true",
-            downloadRole="true", uploadRole="true", playlistRole="true",
-            coverArtRole="true", commentRole="true", podcastRole="true",
-            streamRole="true", jukeboxRole="true", shareRole="true"
-        )
-        f_el = _E.SubElement(u_el, "folder")
-        f_el.text = "1"
-        return _fmt(rt, js, cb)
-
-    if "getbookmarks" in pl:
-        rt = _E.Element("subsonic-response", status="ok")
-        _E.SubElement(rt, "bookmarks")
-        return _fmt(rt, js, cb)
-
-    if "createbookmark" in pl or "deletebookmark" in pl or "updateplayqueue" in pl:
-        rt = _E.Element("subsonic-response", status="ok")
-        return _fmt(rt, js, cb)
-
-    return await call_next(req)
-
-_SCACHE.clear()
