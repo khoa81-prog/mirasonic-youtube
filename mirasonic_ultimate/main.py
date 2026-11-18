@@ -4963,3 +4963,307 @@ async def _k16_ondemand_art_mw(req, call_next):
     return await call_next(req)
 
 _SCACHE.clear()
+
+# --- K17: V1.6.4 PER-USER PLAYLIST & STARRED ISOLATION (PRIVATE USER WORKSPACES) ---
+def _ensure_u_collections(u):
+    p = _get_u_prof(u)
+    with _USER_PROF_LOCK:
+        if "playlists" not in p or not isinstance(p["playlists"], dict):
+            p["playlists"] = {}
+            # Neu la tai khoan admin/chinh chu va co playlist cu trong _PLS toan cuc -> Ke thua sang cho de tu quan ly
+            if u in ("admin", "khoa") and "_PLS" in globals() and isinstance(_PLS, dict):
+                for pid, pdata in list(_PLS.items()):
+                    if isinstance(pdata, dict):
+                        p["playlists"][str(pid)] = dict(pdata)
+        if "starred" not in p or not isinstance(p["starred"], dict):
+            p["starred"] = {"songs": {}, "albums": {}, "artists": {}}
+        p["starred"].setdefault("songs", {})
+        p["starred"].setdefault("albums", {})
+        p["starred"].setdefault("artists", {})
+        if "hidden_hdd_pls" not in p or not isinstance(p["hidden_hdd_pls"], list):
+            p["hidden_hdd_pls"] = []
+    return p
+
+def _resolve_any_song_dict(sid):
+    s = str(sid or "").strip()
+    if not s:
+        return None
+    if s.startswith("hdd"):
+        raw_s = _RE.sub(r"^(hdd\d*_|hdd_)+", "", s)
+        for h_item in _get_all_hdd_songs():
+            if _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(h_item.get("id", ""))) == raw_s:
+                return dict(h_item)
+        d = _fetch_single_hdd_meta(s)
+        if d:
+            d["id"] = "hdd_" + _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(d.get("id") or raw_s))
+            return d
+        return None
+    clean_v = _RE.sub(r"^(yt\d*_|al_)+", "", s)
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
+    vid = m.group(1) if m else clean_v
+    return dict(_YL.get(vid) or _ensure_vid_meta(vid) or {})
+
+def _build_user_playlists_xml(u):
+    p = _ensure_u_collections(u)
+    rt = _E.Element("subsonic-response", status="ok")
+    pls_el = _E.SubElement(rt, "playlists")
+
+    # 1. Lay danh sach Playlist cua rieng User nay
+    u_pls = p.get("playlists") or {}
+    for pid, pl_obj in list(u_pls.items()):
+        if not isinstance(pl_obj, dict):
+            continue
+        s_ids = list(pl_obj.get("songs") or pl_obj.get("tracks") or [])
+        dur_sum = 0
+        for sid in s_ids:
+            sd = _YL.get(_RE.sub(r"^(yt\d*_|al_)+", "", str(sid)))
+            dur_sum += int(sd.get("duration", 240)) if (sd and str(sd.get("duration", "")).isdigit()) else 240
+        cov = str(pl_obj.get("coverArt") or (s_ids[0] if s_ids else pid))
+        _E.SubElement(
+            pls_el, "playlist",
+            id=str(pid),
+            name=str(pl_obj.get("name") or "Playlist"),
+            owner=u,
+            public="false",
+            songCount=str(len(s_ids)),
+            duration=str(dur_sum),
+            created=str(pl_obj.get("created") or _now_iso()),
+            changed=str(pl_obj.get("changed") or _now_iso()),
+            coverArt=cov
+        )
+    return rt
+
+def _build_single_user_playlist_xml(u, pid):
+    p = _ensure_u_collections(u)
+    u_pls = p.get("playlists") or {}
+
+    # Neu la Playlist nam trong ho so rieng cua User
+    if pid in u_pls:
+        pl_obj = u_pls[pid]
+        s_ids = list(pl_obj.get("songs") or pl_obj.get("tracks") or [])
+        resolved = []
+        for sid in s_ids:
+            sd = _resolve_any_song_dict(sid)
+            if sd and sd.get("id"):
+                resolved.append(sd)
+        dur_sum = sum(int(x.get("duration", 240)) for x in resolved if str(x.get("duration", "")).isdigit())
+        cov = str(pl_obj.get("coverArt") or (resolved[0]["id"] if resolved else pid))
+        rt = _E.Element("subsonic-response", status="ok")
+        pl_el = _E.SubElement(
+            rt, "playlist",
+            id=str(pid),
+            name=str(pl_obj.get("name") or "Playlist"),
+            owner=u,
+            public="false",
+            songCount=str(len(resolved)),
+            duration=str(dur_sum),
+            created=str(pl_obj.get("created") or _now_iso()),
+            changed=str(pl_obj.get("changed") or _now_iso()),
+            coverArt=cov
+        )
+        for idx, sd in enumerate(resolved, 1):
+            sc = dict(sd)
+            sc["track"] = str(idx)
+            _E.SubElement(pl_el, "entry", **sc)
+        return rt
+
+    # Neu la Playlist goi y tu YouTube (pl_...) hoac HDD -> De luong goc xu ly
+    return None
+
+def _mutate_user_playlist(u, pl_path, qd, qi):
+    p = _ensure_u_collections(u)
+    u_pls = p["playlists"]
+    pid = str(qd.get("playlistId") or qd.get("id") or "").strip()
+
+    if "deleteplaylist" in pl_path:
+        if pid:
+            with _USER_PROF_LOCK:
+                u_pls.pop(pid, None)
+                if u in ("admin", "khoa") and "_PLS" in globals() and isinstance(_PLS, dict):
+                    _PLS.pop(pid, None)
+            _save_user_profiles()
+        return _E.Element("subsonic-response", status="ok")
+
+    if "createplaylist" in pl_path:
+        name = str(qd.get("name") or "").strip()
+        s_ids = [str(v).strip() for k, v in qi if k == "songId" and str(v).strip()]
+        if not pid or pid not in u_pls:
+            pid = f"upl_{u}_{int(_TM.time()*1000)}"
+        with _USER_PROF_LOCK:
+            cur = u_pls.get(pid) or {
+                "id": pid,
+                "name": name or "New Playlist",
+                "owner": u,
+                "created": _now_iso(),
+                "songs": []
+            }
+            if name:
+                cur["name"] = name
+            if s_ids:
+                cur["songs"] = s_ids
+            cur["changed"] = _now_iso()
+            u_pls[pid] = cur
+        _save_user_profiles()
+        return _build_single_user_playlist_xml(u, pid) or _E.Element("subsonic-response", status="ok")
+
+    if "updateplaylist" in pl_path and pid:
+        with _USER_PROF_LOCK:
+            if pid not in u_pls:
+                # Neu sua playlist cu ke thua tu _PLS
+                if "_PLS" in globals() and isinstance(_PLS, dict) and pid in _PLS:
+                    u_pls[pid] = dict(_PLS[pid])
+                else:
+                    u_pls[pid] = {"id": pid, "name": "Playlist", "owner": u, "created": _now_iso(), "songs": []}
+            cur = u_pls[pid]
+            cur_songs = list(cur.get("songs") or cur.get("tracks") or [])
+            if qd.get("name"):
+                cur["name"] = str(qd.get("name")).strip()
+            # Xoa theo vi tri index (tu cao xuong thap de khong lech chi so)
+            rm_idx = sorted(
+                [int(v) for k, v in qi if k == "songIndexToRemove" and str(v).strip().isdigit()],
+                reverse=True
+            )
+            for idx in rm_idx:
+                if 0 <= idx < len(cur_songs):
+                    cur_songs.pop(idx)
+            # Them bai hat moi vao Playlist cua rieng User nay
+            add_ids = [str(v).strip() for k, v in qi if k == "songIdToAdd" and str(v).strip()]
+            for aid in add_ids:
+                cur_songs.append(aid)
+            cur["songs"] = cur_songs
+            cur.pop("tracks", None)
+            cur["changed"] = _now_iso()
+            u_pls[pid] = cur
+        _save_user_profiles()
+        return _E.Element("subsonic-response", status="ok")
+
+    return _E.Element("subsonic-response", status="ok")
+
+def _handle_user_star(u, is_unstar, qi):
+    p = _ensure_u_collections(u)
+    st = p["starred"]
+    now_s = _now_iso()
+    s_ids = [str(v).strip() for k, v in qi if k == "id" and str(v).strip()]
+    al_ids = [str(v).strip() for k, v in qi if k == "albumId" and str(v).strip()]
+    ar_ids = [str(v).strip() for k, v in qi if k == "artistId" and str(v).strip()]
+
+    with _USER_PROF_LOCK:
+        for sid in s_ids:
+            if sid.startswith("al_") or sid.startswith("hdd_al-"):
+                if is_unstar: st["albums"].pop(sid, None)
+                else: st["albums"][sid] = now_s
+            elif sid.startswith("ar_") or sid.startswith("hdd_ar-"):
+                if is_unstar: st["artists"].pop(sid, None)
+                else: st["artists"][sid] = now_s
+            else:
+                if is_unstar: st["songs"].pop(sid, None)
+                else: st["songs"][sid] = now_s
+        for alid in al_ids:
+            if is_unstar: st["albums"].pop(alid, None)
+            else: st["albums"][alid] = now_s
+        for arid in ar_ids:
+            if is_unstar: st["artists"].pop(arid, None)
+            else: st["artists"][arid] = now_s
+    _save_user_profiles()
+    return _E.Element("subsonic-response", status="ok")
+
+def _build_user_starred_xml(u, tag_name):
+    p = _ensure_u_collections(u)
+    st = p["starred"]
+    rt = _E.Element("subsonic-response", status="ok")
+    st_el = _E.SubElement(rt, tag_name)
+
+    for arid, ts in list((st.get("artists") or {}).items()):
+        aname = _resolve_artist_name(arid) or "Artist"
+        _E.SubElement(st_el, "artist", id=arid, name=aname, coverArt=arid, albumCount="10", starred=ts)
+
+    for alid, ts in list((st.get("albums") or {}).items()):
+        clean_v = _RE.sub(r"^(yt\d*_|al_)+", "", alid)
+        sd = _resolve_any_song_dict(clean_v)
+        if sd:
+            at = {
+                "id": alid,
+                "parent": str(sd.get("artistId") or "ar_yt"),
+                "isDir": "true",
+                "name": str(sd.get("album") or sd.get("title") or alid),
+                "title": str(sd.get("album") or sd.get("title") or alid),
+                "album": str(sd.get("album") or sd.get("title") or alid),
+                "artist": str(sd.get("artist") or "Artist"),
+                "coverArt": str(sd.get("id") or clean_v),
+                "songCount": "1",
+                "duration": str(sd.get("duration") or "240"),
+                "created": ts,
+                "starred": ts
+            }
+            _E.SubElement(st_el, "album", **at)
+
+    for sid, ts in list((st.get("songs") or {}).items()):
+        sd = _resolve_any_song_dict(sid)
+        if sd and sd.get("id"):
+            sc = dict(sd)
+            sc["starred"] = ts
+            _E.SubElement(st_el, "song", **sc)
+    return rt
+
+@app.middleware("http")
+async def _k17_private_playlists_mw(req, call_next):
+    if req.method == "OPTIONS":
+        return await call_next(req)
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if not pl.startswith("/rest/"):
+        return await call_next(req)
+
+    _load_addon_opts()
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    if req.method == "POST":
+        bf = await req.body()
+        if bf:
+            try:
+                qi.extend([(str(k), str(v)) for k, v in _J.loads(bf).items()] if bf.strip().startswith(b"{") else _pq(bf.decode("utf-8", "ignore"), keep_blank_values=True))
+            except Exception:
+                pass
+        async def _rc():
+            return {"type": "http.request", "body": bf, "more_body": False}
+        req._receive = _rc
+
+    qd = dict(qi); fv = qd.get("f", "").lower()
+    js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
+    cb = qd.get("callback") if fv == "jsonp" else None
+    if not _check_auth(qd):
+        return await call_next(req)
+
+    uname = str(qd.get("u") or "admin").strip().lower() or "admin"
+    lp = _A.get_running_loop()
+
+    # 1. Lay danh sach Playlists CUA RIENG USER DANG DANG NHAP
+    if "/getplaylists" in pl:
+        rt = await lp.run_in_executor(_REQ_POOL, _build_user_playlists_xml, uname)
+        return _fmt(rt, js, cb)
+
+    # 2. Xem chi tiet 1 Playlist: Neu la Playlist ca nhan thi tra ve tu kho rieng, neu la Playlist YouTube (pl_...) thi cho di tiep
+    if "/getplaylist" in pl and "/getplaylists" not in pl:
+        pid = str(qd.get("id") or "").strip()
+        if pid and not pid.startswith("pl_"):
+            rt = await lp.run_in_executor(_REQ_POOL, _build_single_user_playlist_xml, uname, pid)
+            if rt is not None:
+                return _fmt(rt, js, cb)
+
+    # 3. Tao / Sua / Xoa Playlist -> Chi luu vao ho so rieng cua User do!
+    if any(k in pl for k in ("/createplaylist", "/updateplaylist", "/deleteplaylist")):
+        rt = await lp.run_in_executor(_REQ_POOL, _mutate_user_playlist, uname, pl, qd, qi)
+        return _fmt(rt, js, cb)
+
+    # 4. Tach rieng danh sach Yeu thich (Star / Unstar / getStarred) theo tung User
+    if "/star" in pl or "/unstar" in pl:
+        is_un = "/unstar" in pl
+        rt = await lp.run_in_executor(_REQ_POOL, _handle_user_star, uname, is_un, qi)
+        return _fmt(rt, js, cb)
+
+    if "/getstarred" in pl:
+        tg = "starred2" if "2" in pl else "starred"
+        rt = await lp.run_in_executor(_REQ_POOL, _build_user_starred_xml, uname, tg)
+        return _fmt(rt, js, cb)
+
+    return await call_next(req)
+
+_SCACHE.clear()
