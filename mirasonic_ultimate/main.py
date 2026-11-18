@@ -5463,3 +5463,339 @@ except Exception:
     pass
 
 _SCACHE.clear()
+
+
+# --- K18: V1.7.7 STRICT YOUTUBE MUSIC vs YOUTUBE SEPARATION & LANGUAGE LOCK (EN/VI) ---
+_VN_CHARS_RE = _RE.compile(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]")
+
+_NON_MUSIC_JUNK_RE = _RE.compile(
+    r"\b(review\s*phim|tóm\s*tắt|tom\s*tat|thế\s*chiến|the\s*chien|lịch\s*sử|lich\s*su|"
+    r"sử\s*để\s*hiểu|chủ\s*tịch|chu\s*tich|giả\s*làm|gia\s*lam|rổ\s*phim|ro\s*phim|"
+    r"tiểu\s*tâm|tieu\s*tam|thời\s*sự|thoi\s*su|tin\s*tức|tin\s*tuc|bản\s*tin|"
+    r"truyện\s*ma|truyện\s*đêm|đọc\s*truyện|phim\s*ngắn|tập\s*\d+|full\s*bộ|"
+    r" thuyết\s*minh|lồng\s*tiếng|reaction|podcast|interview|phỏng\s*vấn|"
+    r"gameplay|walkthrough|highlights|bóng\s*đá|trực\s*tiếp)\b",
+    _RE.I
+)
+
+def _has_vietnamese(s):
+    return bool(_VN_CHARS_RE.search(str(s or "")))
+
+def _is_non_music_junk(title, artist=""):
+    comb = f"{title} {artist}"
+    return bool(_NON_MUSIC_JUNK_RE.search(comb))
+
+def _is_ytm_track(vid):
+    # Mot bai hat duoc xac dinh la YouTube Music neu:
+    # 1. Co anh vuong goc tren CDN cua YouTube Music (_YTM_THUMB chua googleusercontent.com / lh3.)
+    # 2. Hoac trong metadata _YL khong phai la Video ([Video] / isVideo="true") va co anh trong _YTM_THUMB
+    tu = str(_YTM_THUMB.get(vid) or "")
+    if "googleusercontent.com" in tu or "ggpht.com" in tu:
+        return True
+    s = _YL.get(vid) or {}
+    if s.get("isVideo") == "true" or "[Video]" in str(s.get("title") or ""):
+        return False
+    if vid in _YTM_THUMB:
+        return True
+    return False
+
+def _parse_dur_str(ds):
+    parts = [int(x) for x in str(ds or "").split(":") if x.strip().isdigit()]
+    if len(parts) == 2:
+        return parts[0] * 60 + parts[1]
+    if len(parts) == 3:
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    return 240
+
+# 1. CHI LAY NHAC TREN YOUTUBE MUSIC (music.youtube.com API - SONGS ONLY!)
+def _fetch_pure_ytm_next_tracks(seed_vid, seed_title, seed_artist, is_vn_seed, limit=25):
+    out = []
+    seen = {seed_vid}
+
+    def _add_ytm_item(vid, tit, art, dur_s, thumb_u):
+        if not vid or vid in seen or not _RE.match(r"^[A-Za-z0-9_-]{11}$", vid):
+            return
+        if not tit or _is_non_music_junk(tit, art):
+            return
+        # KHOA NGON NGU TUYET DOI:
+        # - Neu bai goc la TIENG ANH (khong co dau tieng Viet) -> CAM 100% bai co dau tieng Viet lot vao!
+        # - Neu bai goc la TIENG VIET -> Uu tien giu mach nhac tieng Viet!
+        item_is_vn = _has_vietnamese(tit) or _has_vietnamese(art)
+        if not is_vn_seed and item_is_vn:
+            return
+        if is_vn_seed and not item_is_vn and len(out) < 18:
+            return
+        if dur_s < 65 or dur_s > 900:
+            return
+        seen.add(vid)
+        if thumb_u:
+            _YTM_THUMB[vid] = thumb_u
+        sd = _make_song(vid, tit, art, tit, str(dur_s), is_vid=False, thumb_url=thumb_u)
+        if sd:
+            out.append(sd)
+
+    # Buoc A: Goi truc tiep YouTube Music Radio Queue (next endpoint voi playlistId=RDAMVM{seed_vid} cua rieng YTMusic!)
+    try:
+        pl_body = _J.dumps({
+            "context": {
+                "client": {
+                    "clientName": "WEB_REMIX",
+                    "clientVersion": "1.20260101.01.00",
+                    "hl": "vi" if is_vn_seed else "en",
+                    "gl": "VN" if is_vn_seed else "US"
+                }
+            },
+            "videoId": seed_vid,
+            "playlistId": f"RDAMVM{seed_vid}",
+            "isAudioOnly": True
+        }).encode("utf-8")
+        req = _U.Request(
+            "https://music.youtube.com/youtubei/v1/next?prettyPrint=false",
+            data=pl_body,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0",
+                "Origin": "https://music.youtube.com",
+                "Referer": "https://music.youtube.com/"
+            }
+        )
+        with _U.urlopen(req, timeout=3.5, context=_CTX) as r:
+            raw = r.read().decode("utf-8", "ignore")
+            data = _J.loads(raw)
+            # Duyet tat ca playlistPanelVideoRenderer trong YTMusic Automix
+            def _walk_ytm_next(node):
+                if isinstance(node, dict):
+                    if "playlistPanelVideoRenderer" in node:
+                        pvr = node["playlistPanelVideoRenderer"]
+                        v_id = str(pvr.get("videoId") or "")
+                        t_runs = (pvr.get("title") or {}).get("runs") or []
+                        t_str = "".join(str(x.get("text") or "") for x in t_runs).strip()
+                        b_runs = (pvr.get("longBylineText") or pvr.get("shortBylineText") or {}).get("runs") or []
+                        a_str = str(b_runs[0].get("text") or "YouTube Music").strip() if b_runs else "YouTube Music"
+                        l_runs = (pvr.get("lengthText") or {}).get("runs") or []
+                        d_sec = _parse_dur_str(l_runs[0].get("text") if l_runs else "4:00")
+                        thumbs = ((pvr.get("thumbnail") or {}).get("thumbnails") or [])
+                        t_url = str(thumbs[-1].get("url") or "") if thumbs else ""
+                        # Chi nhan bai hat co anh vuong YTMusic (googleusercontent.com) hoac thuoc YTMusic Radio
+                        if not t_url or "googleusercontent.com" in t_url or "ytimg.com" in t_url:
+                            if "googleusercontent.com" not in t_url and v_id in _YTM_THUMB:
+                                t_url = _YTM_THUMB[v_id]
+                            _add_ytm_item(v_id, t_str, a_str, d_sec, t_url)
+                    for val in node.values():
+                        _walk_ytm_next(val)
+                elif isinstance(node, list):
+                    for item in node:
+                        _walk_ytm_next(item)
+            _walk_ytm_next(data)
+    except Exception:
+        pass
+
+    # Buoc B: Neu YTMusic Radio chua du 22 bai, bo sung bang YTMusic Search voi params "SONGS ONLY" (EgWKAQIIAWoKEAMQBBAJEAoQBQ%3D%3D)
+    if len(out) < 22:
+        clean_art = _RE.sub(r"(?i)\b(official|topic|vevo|channel|music|band)\b", "", str(seed_artist or "")).strip()
+        queries = []
+        if is_vn_seed:
+            queries = [f"{clean_art} bài hát hay nhất", f"nhạc cùng thể loại {seed_title} {clean_art}"]
+        else:
+            queries = [f"{clean_art} greatest hits songs", f"classic songs like {seed_title} {clean_art}"]
+        for q_str in queries:
+            if len(out) >= limit:
+                break
+            try:
+                for s_item in (_ytm_api_search(q_str, limit=20) or []):
+                    if len(out) >= limit:
+                        break
+                    v_id = str(s_item.get("id") or "")
+                    t_str = str(s_item.get("title") or "")
+                    a_str = str(s_item.get("artist") or "")
+                    d_sec = int(s_item.get("duration") or 240) if str(s_item.get("duration", "")).isdigit() else 240
+                    t_url = str(_YTM_THUMB.get(v_id) or "")
+                    _add_ytm_item(v_id, t_str, a_str, d_sec, t_url)
+            except Exception:
+                pass
+
+    return out[:limit]
+
+# 2. CHI LAY NHAC TREN YOUTUBE THUONG (KHI CHON VIDEO YOUTUBE) + LOC SACH VIDEO RAC & KHOA NGON NGU!
+def _fetch_pure_yt_video_next_tracks(seed_vid, seed_title, seed_artist, is_vn_seed, limit=25):
+    out = []
+    seen = {seed_vid}
+
+    def _add_yt_vid_item(vid, tit, art, dur_s):
+        if not vid or vid in seen or not _RE.match(r"^[A-Za-z0-9_-]{11}$", vid):
+            return
+        if not tit or _is_non_music_junk(tit, art):
+            return
+        # KHOA NGON NGU TUYET DOI: Dang nghe Tieng Anh thi khong bao gio cho video Tieng Viet lot vao!
+        item_is_vn = _has_vietnamese(tit) or _has_vietnamese(art)
+        if not is_vn_seed and item_is_vn:
+            return
+        if is_vn_seed and not item_is_vn and len(out) < 18:
+            return
+        if dur_s < 65 or dur_s > 3600:
+            return
+        seen.add(vid)
+        sd = _make_song(vid, tit, art, tit, str(dur_s), is_vid=True)
+        if sd:
+            out.append(sd)
+
+    # Buoc A: Goi YouTube Music Mix Playlist (list=RD{seed_vid}) tren YouTube voi ngon ngu phu hop (en-US cho nhac Anh, vi-VN cho nhac Viet)
+    hl_code = "vi-VN,vi;q=0.9" if is_vn_seed else "en-US,en;q=0.9"
+    gl_param = "VN" if is_vn_seed else "US"
+    try:
+        u_mix = f"https://www.youtube.com/watch?v={seed_vid}&list=RD{seed_vid}&hl={'vi' if is_vn_seed else 'en'}&gl={gl_param}"
+        req = _U.Request(u_mix, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept-Language": hl_code})
+        with _U.urlopen(req, timeout=3.5, context=_CTX) as r:
+            html = r.read().decode("utf-8", "ignore")
+            m = _RE.search(r"var ytInitialData\s*=\s*(\{.*?\});</script>", html)
+            if m:
+                data = _J.loads(m.group(1))
+                def _walk_yt_watch(node):
+                    if isinstance(node, dict):
+                        for k_rend in ("playlistPanelVideoRenderer", "compactVideoRenderer", "lockupViewModel"):
+                            if k_rend in node:
+                                rv = node[k_rend]
+                                v_id = str(rv.get("videoId") or rv.get("contentId") or "")
+                                t_runs = (rv.get("title") or {}).get("runs") or []
+                                t_str = "".join(str(x.get("text") or "") for x in t_runs).strip() or str((rv.get("title") or {}).get("simpleText") or "")
+                                b_runs = (rv.get("longBylineText") or rv.get("shortBylineText") or {}).get("runs") or []
+                                a_str = str(b_runs[0].get("text") or "YouTube").strip() if b_runs else "YouTube"
+                                l_txt = str((rv.get("lengthText") or {}).get("simpleText") or "")
+                                if not l_txt and (rv.get("lengthText") or {}).get("runs"):
+                                    l_txt = str(rv["lengthText"]["runs"][0].get("text") or "")
+                                if l_txt:
+                                    _add_yt_vid_item(v_id, t_str, a_str, _parse_dur_str(l_txt))
+                        for val in node.values():
+                            _walk_yt_watch(val)
+                    elif isinstance(node, list):
+                        for item in node:
+                            _walk_yt_watch(item)
+                _walk_yt_watch(data)
+    except Exception:
+        pass
+
+    # Buoc B: Neu Mix chua du, tim tren YouTube Search theo dung ngon ngu cua bai hat goc
+    if len(out) < 20:
+        clean_art = _RE.sub(r"(?i)\b(official|topic|vevo|channel|music)\b", "", str(seed_artist or "")).strip()
+        q_fb = f"{clean_art} {seed_title[:25]} music" if not is_vn_seed else f"{clean_art} nhạc tuyển chọn"
+        try:
+            for v_item in (_yt_web_search(q_fb, "") or []):
+                if len(out) >= limit:
+                    break
+                v_id = str(v_item.get("id") or "")
+                t_str = str(v_item.get("title") or "")
+                a_str = str(v_item.get("artist") or "")
+                d_sec = int(v_item.get("duration") or 240) if str(v_item.get("duration", "")).isdigit() else 240
+                _add_yt_vid_item(v_id, t_str, a_str, d_sec)
+        except Exception:
+            pass
+
+    return out[:limit]
+
+# Ghi de ham _build_endless_yt_album de phan luong 100%:
+# - Neu chon nhac tu YouTube Music -> Danh sach tiep theo CHI lay tu YouTube Music!
+# - Neu chon nhac tu YouTube thuong -> Danh sach tiep theo CHI lay tu YouTube thuong (kem bo loc ngon ngu & chan video rac)!
+def _build_endless_yt_album(vid, req_album_id=None):
+    clean_v = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", str(vid or "").strip())
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
+    v = m.group(1) if m else clean_v
+
+    seed_s = _YL.get(v) or _ensure_vid_meta(v) or _make_song(v, v, "YouTube", v, "240")
+    seed_tit = str(seed_s.get("title") or v)
+    seed_art = str(seed_s.get("artist") or "YouTube")
+    seed_arid = str(seed_s.get("artistId") or _artist_id(seed_art))
+
+    is_vn_seed = _has_vietnamese(seed_tit) or _has_vietnamese(seed_art)
+    is_ytm = _is_ytm_track(v)
+
+    if is_ytm:
+        next_tracks = _fetch_pure_ytm_next_tracks(v, seed_tit, seed_art, is_vn_seed, limit=24)
+    else:
+        next_tracks = _fetch_pure_yt_video_next_tracks(v, seed_tit, seed_art, is_vn_seed, limit=24)
+
+    all_tracks = [dict(seed_s)] + [dict(x) for x in next_tracks if x.get("id") != v]
+    total_dur = sum(int(x.get("duration") or 240) for x in all_tracks if str(x.get("duration", "")).isdigit())
+
+    al_id_out = str(req_album_id or ("al_" + v))
+    rt = _E.Element("subsonic-response", status="ok")
+    al_el = _E.SubElement(
+        rt, "album",
+        id=al_id_out,
+        parent=seed_arid,
+        artistId=seed_arid,
+        isDir="true",
+        name=seed_tit,
+        title=seed_tit,
+        album=seed_tit,
+        artist=seed_art,
+        coverArt="yt36_trk_" + v,
+        songCount=str(len(all_tracks)),
+        duration=str(total_dur),
+        created=str(seed_s.get("created") or _now_iso()),
+        year="2026"
+    )
+    for idx, tr in enumerate(all_tracks, 1):
+        tc = dict(tr)
+        tc["track"] = str(idx)
+        _E.SubElement(al_el, "song", **tc)
+    return rt
+
+# Cap nhat luon getSimilarSongs / getSimilarSongs2 (khi App xin danh sach Radio tu 1 bai hat) theo dung quy tac YTMusic vs YouTube
+_orig_get_similar_k17 = _get_similar_songs_xml if "_get_similar_songs_xml" in globals() else None
+def _get_similar_songs_xml_v177(sid, count=25, tag_name="similarSongs2"):
+    clean_v = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", str(sid or "").strip())
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
+    if not m or str(sid).startswith("hdd"):
+        if _orig_get_similar_k17:
+            return _orig_get_similar_k17(sid, count, tag_name)
+    v = m.group(1)
+    seed_s = _YL.get(v) or _ensure_vid_meta(v) or {}
+    seed_tit = str(seed_s.get("title") or v)
+    seed_art = str(seed_s.get("artist") or "YouTube")
+    is_vn_seed = _has_vietnamese(seed_tit) or _has_vietnamese(seed_art)
+    if _is_ytm_track(v):
+        tracks = _fetch_pure_ytm_next_tracks(v, seed_tit, seed_art, is_vn_seed, limit=count)
+    else:
+        tracks = _fetch_pure_yt_video_next_tracks(v, seed_tit, seed_art, is_vn_seed, limit=count)
+    rt = _E.Element("subsonic-response", status="ok")
+    sim_el = _E.SubElement(rt, tag_name)
+    for tr in tracks:
+        _E.SubElement(sim_el, "song", **dict(tr))
+    return rt
+
+_get_similar_songs_xml = _get_similar_songs_xml_v177
+
+@app.middleware("http")
+async def _k18_strict_radio_mw(req, call_next):
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if not pl.startswith("/rest/"):
+        return await call_next(req)
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    qd = dict(qi); fv = qd.get("f", "").lower()
+    js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
+    cb = qd.get("callback") if fv == "jsonp" else None
+    if not _check_auth(qd):
+        return await call_next(req)
+
+    lp = _A.get_running_loop()
+
+    # Bat getAlbum cho bài YouTube để dùng bộ lọc YTMusic vs YouTube + Khóa ngôn ngữ Anh/Việt mới
+    if "/getalbum" in pl and "getalbumlist" not in pl:
+        aid = str(qd.get("id") or "").strip()
+        if aid and not aid.startswith("hdd") and not aid.startswith("pl_"):
+            clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", aid)
+            if _RE.match(r"^[A-Za-z0-9_-]{11}$", clean_v):
+                rt = await lp.run_in_executor(_REQ_POOL, _build_endless_yt_album, clean_v, aid)
+                return _fmt(rt, js, cb)
+
+    if "getsimilarsongs" in pl:
+        sid = str(qd.get("id") or "").strip()
+        cnt = int(qd.get("count") or 25) if str(qd.get("count", "")).isdigit() else 25
+        tg = "similarSongs2" if "2" in pl else "similarSongs"
+        if sid and not sid.startswith("hdd"):
+            rt = await lp.run_in_executor(_REQ_POOL, _get_similar_songs_xml_v177, sid, cnt, tg)
+            return _fmt(rt, js, cb)
+
+    return await call_next(req)
+
+_SCACHE.clear()
