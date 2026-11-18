@@ -5766,6 +5766,24 @@ def _norm_hdd_song_node(d):
     sc["type"] = "music"
     return sc
 
+_VN_UNACCENTED_KW = _RE.compile(
+    r"\b(nhac\s*viet|bolero|tru\s*tinh|que\s*huong|cai\s*luong|lien\s*khuc|tinh\s*khuc|"
+    r"manh\s*dinh|che\s*linh|tuan\s*vu|khanh\s*ly|le\s*quyen|bang\s*kieu|nhu\s*quynh|"
+    r"dan\s*nguyen|quang\s*le|ngoc\s*son|duy\s*khanh|thanh\s*tuyen|giao\s*linh|huong\s*lan|"
+    r"hoang\s*dung|my\s*tam|dam\s*vinh\s*hung|hong\s*nhung|my\s*linh|thanh\s*lam|"
+    r"trinh\s*cong\s*son|vu\s*thanh\s*an|ngo\s*thuy\s*mien|lam\s*phuong|ih|chuyen\s*gian)\b",
+    _RE.I
+)
+
+def _is_hdd_vietnamese_song(d):
+    # Kiem tra dau tieng Viet trong Title, Artist, Album, Genre va duong dan thu muc Path tren HDD
+    t_str = f"{d.get('title','')} {d.get('artist','')} {d.get('album','')} {d.get('genre','')} {d.get('path','')}"
+    if _has_vietnamese(t_str):
+        return True
+    if _VN_UNACCENTED_KW.search(t_str):
+        return True
+    return False
+
 def _build_endless_hdd_mix(req_id):
     raw_id = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-|trk_)+", "", str(req_id or "").strip())
     all_hdd = _get_cached_hdd_pool()
@@ -5773,8 +5791,15 @@ def _build_endless_hdd_mix(req_id):
     album_tracks = []
     seed_song = None
 
-    # A. Thu lay Album that tu Navidrome HDD (neu req_id la ma Album cua Navidrome)
-    if _HDD and raw_id:
+    # A. Neu req_id la ma Bai hat HDD (do _patched_fmt_k16 gan albumId = hdd_al_<song_id>) -> Tim bai hat do lam bai so 1!
+    for hs in all_hdd:
+        hs_raw = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(hs.get("id") or ""))
+        if hs_raw == raw_id:
+            seed_song = _norm_hdd_song_node(hs)
+            break
+
+    # B. Neu khong phai ma bai hat don le -> Thu lay Album that tu Navidrome HDD
+    if not seed_song and _HDD and raw_id:
         try:
             hq = [x for x in _hdd_q([("id", raw_id)]) if x[0] != "f"]
             with _U.urlopen(_U.Request(f"{_HDD}/rest/getAlbum.view?{_ue(hq)}", headers={"User-Agent": "Resonus"}), timeout=2.5, context=_CTX) as r:
@@ -5786,19 +5811,13 @@ def _build_endless_hdd_mix(req_id):
         except Exception:
             pass
 
-    # B. Neu req_id la ma Bai hat HDD (do _patched_fmt_k16 gan albumId = hdd_al_<song_id>) -> Tim bai hat do lam bai so 1!
-    if not album_tracks:
-        for hs in all_hdd:
-            hs_raw = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(hs.get("id") or ""))
-            if hs_raw == raw_id:
-                seed_song = _norm_hdd_song_node(hs)
-                break
-        if not seed_song and raw_id:
-            d_single = _fetch_single_hdd_meta(raw_id)
-            if d_single and d_single.get("id"):
-                seed_song = _norm_hdd_song_node(d_single)
-        if seed_song:
-            album_tracks = [seed_song]
+    if not album_tracks and not seed_song and raw_id:
+        d_single = _fetch_single_hdd_meta(raw_id)
+        if d_single and d_single.get("id"):
+            seed_song = _norm_hdd_song_node(d_single)
+
+    if seed_song and not album_tracks:
+        album_tracks = [seed_song]
 
     if not album_tracks and all_hdd:
         picked = list(all_hdd)
@@ -5810,25 +5829,38 @@ def _build_endless_hdd_mix(req_id):
 
     first_s = album_tracks[0]
     first_art = str(first_s.get("artist") or "").strip().lower()
+    first_alb = _RE.sub(r"^\[HDD\]\s*", "", str(first_s.get("album") or "")).strip().lower()
+    seed_is_vn = _is_hdd_vietnamese_song(first_s)
+
     seen_sids = {_RE.sub(r"^(hdd\d*_|hdd_)+", "", str(x.get("id") or "")) for x in album_tracks}
 
-    # C. Moi lan bam vao bai HDD -> Xao tron va noi them 24 bai HDD ke tiep (Uu tien cung ca si truoc, sau do ngau nhien trong kho HDD!)
+    # C. KHOA NGON NGU TUYET DOI 100% TREN HDD:
+    # - Neu bai goc la NHAC VIET -> Chi lay cac bai NHAC VIET trong HDD!
+    # - Neu bai goc la NHAC ANH/QUOC TE -> Chi lay cac bai NHAC ANH/QUOC TE trong HDD!
     same_artist_pool = []
-    other_hdd_pool = []
+    same_lang_pool = []
+
     for hs in all_hdd:
         hs_raw = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(hs.get("id") or ""))
         if not hs_raw or hs_raw in seen_sids:
             continue
-        if first_art and str(hs.get("artist") or "").strip().lower() == first_art:
+        hs_is_vn = _is_hdd_vietnamese_song(hs)
+        # Chan 100% viec tron Viet vao Anh hoac tron Anh vao Viet!
+        if hs_is_vn != seed_is_vn:
+            continue
+
+        hs_art = str(hs.get("artist") or "").strip().lower()
+        if first_art and hs_art == first_art:
             same_artist_pool.append(hs)
         else:
-            other_hdd_pool.append(hs)
+            same_lang_pool.append(hs)
 
     _RND.shuffle(same_artist_pool)
-    _RND.shuffle(other_hdd_pool)
+    _RND.shuffle(same_lang_pool)
 
+    # Moi lan bam vao bai hat HDD o Home: Lay 3-5 bai cung ca si + 20 bai cung ngon ngu da xao tron ngau nhien!
     extra_needed = max(0, 25 - len(album_tracks))
-    chosen_extra = (same_artist_pool[:10] + other_hdd_pool)[:extra_needed]
+    chosen_extra = (same_artist_pool[:5] + same_lang_pool)[:extra_needed]
     _RND.shuffle(chosen_extra)
 
     for ex in chosen_extra:
