@@ -3593,10 +3593,7 @@ async def _k12_seek_mw(req, call_next):
 
     vid = m.group(1)
     lp = _A.get_running_loop()
-    uname_st = str(qd.get("u") or "admin").strip().lower() or "admin"
-    rng_st = req.headers.get("range") or req.headers.get("Range") or ""
-    if (not rng_st) or rng_st.startswith("bytes=0-"):
-        _DL_POOL.submit(_record_u_yt_direct, uname_st, vid)
+    _record_yt_play(vid, False)
 
     t_off = 0
     for tk in ("timeOffset", "timeoffset", "offset"):
@@ -5256,32 +5253,42 @@ async def _k17_private_playlists_mw(req, call_next):
 
 _SCACHE.clear()
 
-# --- K18: V1.7.1 SAFE USER ISOLATION (RECENT, MOST PLAYED, PLAYLISTS) & SYMFONIUM SYNC FIX ---
-import contextvars as _CV
-_CUR_USER_CTX = _CV.ContextVar("_CUR_USER_CTX", default="admin")
 
-_OBJ_CONTAINERS = {
+# --- K18: V1.7.2 BULLETPROOF USER ISOLATION & SYMFONIUM SYNC (NO DEADLOCK) ---
+try:
+    _LSTS = set(_LSTS) | {
+        "musicFolder", "index", "artist", "album", "song", "child",
+        "entry", "playlist", "genre", "openSubsonicExtensions", "versions", "bookmark"
+    }
+    _INTS = set(_INTS) | {
+        "size", "duration", "bitRate", "track", "discNumber", "year",
+        "playCount", "songCount", "albumCount", "offset", "start",
+        "samplingRate", "bitDepth", "channelCount", "userRating", "position"
+    }
+except Exception:
+    pass
+
+_EMPTY_OBJ_TAGS = {
     "albumList", "albumList2", "starred", "starred2", "playlists",
     "artists", "indexes", "genres", "nowPlaying", "playQueue",
     "bookmarks", "musicFolders", "randomSongs", "similarSongs",
     "similarSongs2", "topSongs", "searchResult2", "searchResult3"
 }
 
-# Sua ham _x2d de khi the danh sach rong (khong co con) luon tra ve {} thay vi "" -> Symfonium khong bao gio loi JSON!
-_orig_x2d_k18 = _x2d
+_orig_x2d_v165 = _x2d
 def _x2d(e, d=0):
-    res = _orig_x2d_k18(e, d)
-    if res == "" and e.tag in _OBJ_CONTAINERS:
+    res = _orig_x2d_v165(e, d)
+    if res == "" and getattr(e, "tag", "") in _EMPTY_OBJ_TAGS:
         return {}
     return res
 
-def _clean_u(u):
+def _norm_u(u):
     s = str(u or "").strip().lower()
     return s if s else "admin"
 
-def _record_u_yt_direct(u, vid):
+def _strict_record_yt_for_user(u, vid):
     try:
-        uname = _clean_u(u)
+        uname = _norm_u(u)
         clean_v = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", str(vid or "").strip())
         m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
         if not m:
@@ -5312,9 +5319,9 @@ def _record_u_yt_direct(u, vid):
     except Exception:
         pass
 
-def _record_u_hdd_direct(u, sid):
+def _strict_record_hdd_for_user(u, sid):
     try:
-        uname = _clean_u(u)
+        uname = _norm_u(u)
         d = _fetch_single_hdd_meta(sid)
         if not d:
             return
@@ -5356,18 +5363,14 @@ def _record_u_hdd_direct(u, sid):
     except Exception:
         pass
 
-# Chan cac luong tim kiem ngam tu dong ghi chen vao lich su chung:
 def _record_yt_play(vid, is_search=False):
-    if is_search:
-        return
-    u = _CUR_USER_CTX.get()
-    if u:
-        _record_u_yt_direct(u, vid)
+    return
 
 def _record_hdd_play_for_user(u, sid):
-    _record_u_hdd_direct(u, sid)
+    if u:
+        _strict_record_hdd_for_user(u, sid)
 
-def _make_u_album_entry(u, item_k):
+def _u_item_to_album_dict(u, item_k):
     p = _get_u_prof(u)
     p_cnt = str((p.get("counts") or {}).get(item_k, 1))
     p_ts = str((p.get("ts") or {}).get(item_k) or _now_iso())
@@ -5405,7 +5408,7 @@ def _make_u_album_entry(u, item_k):
             "album": tit,
             "artist": art,
             "coverArt": "yt35_trk_" + vid,
-            "songCount": "25",
+            "songCount": "1",
             "duration": str(s.get("duration") or "240"),
             "playCount": p_cnt,
             "played": p_ts,
@@ -5414,31 +5417,29 @@ def _make_u_album_entry(u, item_k):
         }
     return None
 
-def _build_strict_u_album_list(u, ltype, sz, off, tag_name):
-    uname = _clean_u(u)
+def _build_user_album_list(u, ltype, sz, off, tag_name):
+    uname = _norm_u(u)
     p = _get_u_prof(uname)
     rt = _E.Element("subsonic-response", status="ok")
     al_el = _E.SubElement(rt, tag_name)
     items = []
 
     if ltype == "recent":
-        # CHI LAY 100% TU LICH SU RIENG CUA USER NAY (Khong bao gio lay tu _YR chung!)
         for k in list(p.get("recent") or []):
-            nd = _make_u_album_entry(uname, k)
+            nd = _u_item_to_album_dict(uname, k)
             if nd:
                 items.append(nd)
 
     elif ltype == "frequent":
-        # CHI LAY 100% TU MOST PLAYED RIENG CUA USER NAY!
         cnts = p.get("counts") or {}
-        rec_list = list(p.get("recent") or [])
+        rec_l = list(p.get("recent") or [])
         sorted_k = sorted(
             cnts.keys(),
-            key=lambda k: (-int(cnts.get(k, 0)), rec_list.index(k) if k in rec_list else 9999)
+            key=lambda k: (-int(cnts.get(k, 0)), rec_l.index(k) if k in rec_l else 9999)
         )
         for k in sorted_k:
             if int(cnts.get(k, 0)) > 0:
-                nd = _make_u_album_entry(uname, k)
+                nd = _u_item_to_album_dict(uname, k)
                 if nd:
                     items.append(nd)
 
@@ -5447,19 +5448,13 @@ def _build_strict_u_album_list(u, ltype, sz, off, tag_name):
         for alid, ts in list(st_alb.items()):
             clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", alid)
             item_k = f"hdd:{alid}" if alid.startswith("hdd") else f"yt:{clean_v}"
-            nd = _make_u_album_entry(uname, item_k)
+            nd = _u_item_to_album_dict(uname, item_k)
             if nd:
                 nd["starred"] = str(ts)
                 items.append(nd)
 
     else:
         seen = set()
-        for k in list(p.get("recent") or []):
-            nd = _make_u_album_entry(uname, k)
-            if nd and nd["id"] not in seen:
-                seen.add(nd["id"])
-                items.append(nd)
-
         if _HDD:
             try:
                 hq = _hdd_q([("type", "alphabeticalByName" if "alpha" in ltype.lower() else "newest"), ("size", "500"), ("offset", "0")])
@@ -5486,13 +5481,19 @@ def _build_strict_u_album_list(u, ltype, sz, off, tag_name):
             except Exception:
                 pass
 
+        for k in list(p.get("recent") or []):
+            nd = _u_item_to_album_dict(uname, k)
+            if nd and nd["id"] not in seen:
+                seen.add(nd["id"])
+                items.append(nd)
+
         if ltype in ("random", "newest") and len(items) < 25:
-            for vid, s in list(_YL.items())[:40]:
+            for vid, s in list(_YL.items())[:35]:
                 if isinstance(s, dict) and not str(vid).startswith("hdd"):
                     aid = "al_" + vid
                     if aid not in seen:
                         seen.add(aid)
-                        nd = _make_u_album_entry(uname, f"yt:{vid}")
+                        nd = _u_item_to_album_dict(uname, f"yt:{vid}")
                         if nd:
                             items.append(nd)
 
@@ -5503,15 +5504,58 @@ def _build_strict_u_album_list(u, ltype, sz, off, tag_name):
         elif "alpha" in ltype.lower():
             items.sort(key=lambda x: str(x.get("name") or x.get("title") or "").lower())
 
-    # Phan trang chuan xac theo `off` va `sz` (Khi off >= len(items), tra ve rong de Symfonium ket thuc Sync!)
     sliced = items[off : off + sz]
     child_tag = "album" if "2" in tag_name else "child"
     for nd in sliced:
         _E.SubElement(al_el, child_tag, **nd)
     return rt
 
-def _build_symfonium_artists_safe(u, is_v2=True):
-    uname = _clean_u(u)
+def _build_symfonium_fast_album(al_id):
+    clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", str(al_id or "").strip())
+    if not _RE.match(r"^[A-Za-z0-9_-]{11}$", clean_v):
+        return None
+    s = _YL.get(clean_v) or _ensure_vid_meta(clean_v)
+    if not s:
+        return None
+    tit = str(s.get("title") or clean_v)
+    art = str(s.get("artist") or "YouTube")
+    arid = str(s.get("artistId") or _artist_id(art))
+    dur = str(s.get("duration") or "240") if str(s.get("duration", "")).isdigit() else "240"
+
+    rt = _E.Element("subsonic-response", status="ok")
+    al_el = _E.SubElement(
+        rt, "album",
+        id="al_" + clean_v,
+        name=tit,
+        title=tit,
+        album=tit,
+        artist=art,
+        artistId=arid,
+        coverArt="yt35_trk_" + clean_v,
+        songCount="1",
+        duration=dur,
+        created=str(s.get("created") or "2026-01-01T00:00:00.000Z"),
+        year="2026"
+    )
+    sc = dict(s)
+    sc["id"] = clean_v
+    sc["parent"] = "al_" + clean_v
+    sc["albumId"] = "al_" + clean_v
+    sc["artistId"] = arid
+    sc["isDir"] = "false"
+    sc["type"] = "music"
+    sc["isVideo"] = "false"
+    sc["track"] = "1"
+    sc["discNumber"] = "1"
+    sc["year"] = "2026"
+    sc["suffix"] = "m4a"
+    sc["contentType"] = "audio/mp4"
+    sc["bitRate"] = "256"
+    _E.SubElement(al_el, "song", **sc)
+    return rt
+
+def _build_symfonium_artists(u, is_v2=True):
+    uname = _norm_u(u)
     p = _get_u_prof(uname)
     rt = _E.Element("subsonic-response", status="ok")
     r_tag = "artists" if is_v2 else "indexes"
@@ -5563,7 +5607,7 @@ def _build_symfonium_artists_safe(u, is_v2=True):
     return rt
 
 @app.middleware("http")
-async def _k18_safe_sync_and_user_mw(req, call_next):
+async def _k18_no_deadlock_mw(req, call_next):
     try:
         if req.method == "OPTIONS":
             return _R(content=b"", status_code=200, headers=_CORS)
@@ -5571,7 +5615,6 @@ async def _k18_safe_sync_and_user_mw(req, call_next):
         if not pl.startswith("/rest/"):
             return await call_next(req)
 
-        # Gop tham so POST body vao query_string de Symfonium goi POST van doc duoc day du `u`, `type`, `offset`, `size`
         if req.method == "POST":
             bf = await req.body()
             if bf:
@@ -5581,9 +5624,7 @@ async def _k18_safe_sync_and_user_mw(req, call_next):
                     req.scope["query_string"] = ((old_qs + "&" + _ue(extra)).lstrip("&")).encode("utf-8")
                 except Exception:
                     pass
-            async def _rc():
-                return {"type": "http.request", "body": bf, "more_body": False}
-            req._receive = _rc
+            req.scope["method"] = "GET"
 
         _load_addon_opts()
         qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
@@ -5594,53 +5635,51 @@ async def _k18_safe_sync_and_user_mw(req, call_next):
         if not _check_auth(qd):
             return await call_next(req)
 
-        uname = _clean_u(qd.get("u"))
+        uname = _norm_u(qd.get("u"))
         cl_app = str(qd.get("c") or req.headers.get("user-agent") or "").lower()
         is_symf = "symfonium" in cl_app
         lp = _A.get_running_loop()
 
-        tok = _CUR_USER_CTX.set(uname)
-        try:
-            # 1. Ghi nhan Scrobble cho DUNG USER
-            if "/scrobble" in pl:
-                s_ids = [str(v).strip() for k, v in qi if k == "id" and str(v).strip()]
-                subm = str(qd.get("submission") or "true").lower() != "false"
-                if subm:
-                    for sid in s_ids:
-                        if sid.startswith("hdd"):
-                            _DL_POOL.submit(_record_u_hdd_direct, uname, sid)
-                        else:
-                            _DL_POOL.submit(_record_u_yt_direct, uname, sid)
-                return _fmt(_E.Element("subsonic-response", status="ok"), js, cb)
+        if "/stream" in pl or "/download" in pl:
+            sid = str(qd.get("id") or "").strip()
+            rng = req.headers.get("range") or req.headers.get("Range") or ""
+            if sid and ((not rng) or rng.startswith("bytes=0-")):
+                if sid.startswith("hdd"):
+                    _DL_POOL.submit(_strict_record_hdd_for_user, uname, sid)
+                else:
+                    _DL_POOL.submit(_strict_record_yt_for_user, uname, sid)
 
-            # 2. Cach ly 100% Recently Played & Most Played + Phan trang chuan cho Symfonium
-            if "getalbumlist" in pl:
-                ltype = str(qd.get("type") or "newest").strip()
-                sz = int(qd.get("size") or 50) if str(qd.get("size", "")).isdigit() else 50
-                off = int(qd.get("offset") or 0) if str(qd.get("offset", "")).isdigit() else 0
-                tg = "albumList2" if "2" in pl else "albumList"
-                rt = await lp.run_in_executor(_REQ_POOL, _build_strict_u_album_list, uname, ltype, sz, off, tg)
+        if "/scrobble" in pl:
+            s_ids = [str(v).strip() for k, v in qi if k == "id" and str(v).strip()]
+            subm = str(qd.get("submission") or "true").lower() != "false"
+            if subm:
+                for sid in s_ids:
+                    if sid.startswith("hdd"):
+                        _DL_POOL.submit(_strict_record_hdd_for_user, uname, sid)
+                    else:
+                        _DL_POOL.submit(_strict_record_yt_for_user, uname, sid)
+            return _fmt(_E.Element("subsonic-response", status="ok"), js, cb)
+
+        if "getalbumlist" in pl:
+            ltype = str(qd.get("type") or "newest").strip()
+            sz = int(qd.get("size") or 50) if str(qd.get("size", "")).isdigit() else 50
+            off = int(qd.get("offset") or 0) if str(qd.get("offset", "")).isdigit() else 0
+            tg = "albumList2" if "2" in pl else "albumList"
+            rt = await lp.run_in_executor(_REQ_POOL, _build_user_album_list, uname, ltype, sz, off, tg)
+            return _fmt(rt, js, cb)
+
+        if is_symf:
+            if "getartists" in pl or "getindexes" in pl:
+                rt = await lp.run_in_executor(_REQ_POOL, _build_symfonium_artists, uname, "getartists" in pl)
                 return _fmt(rt, js, cb)
+            if "/getalbum" in pl and "getalbumlist" not in pl:
+                al_id = str(qd.get("id") or "").strip()
+                if al_id and not al_id.startswith("hdd"):
+                    rt = await lp.run_in_executor(_REQ_POOL, _build_symfonium_fast_album, al_id)
+                    if rt is not None:
+                        return _fmt(rt, js, cb)
 
-            # 3. Cac ham ho tro Symfonium Sync
-            if "getopensubsonicextensions" in pl:
-                rt = _E.Element("subsonic-response", status="ok")
-                _E.SubElement(rt, "openSubsonicExtensions")
-                return _fmt(rt, js, cb)
-
-            if "getmusicfolders" in pl:
-                rt = _E.Element("subsonic-response", status="ok")
-                mf = _E.SubElement(rt, "musicFolders")
-                _E.SubElement(mf, "musicFolder", id="1", name="Mirasonic")
-                return _fmt(rt, js, cb)
-
-            if ("getartists" in pl or "getindexes" in pl) and is_symf:
-                rt = await lp.run_in_executor(_REQ_POOL, _build_symfonium_artists_safe, uname, "getartists" in pl)
-                return _fmt(rt, js, cb)
-
-            return await call_next(req)
-        finally:
-            _CUR_USER_CTX.reset(tok)
+        return await call_next(req)
     except Exception:
         return await call_next(req)
 
