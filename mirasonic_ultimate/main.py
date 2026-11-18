@@ -4562,7 +4562,7 @@ async def _k15_user_isolation_mw(req, call_next):
         u_prof = _get_u_prof(uname)
         # Dong bo trang thai bai hat cuoi cung cua rieng User nay cho Endless Autoplay
         if u_prof.get("last_play", {}).get("id"):
-            _LAST_PLAY_STATE["kind"] = u_prof["last_play"]["kind"]
+            _LAST_PLAY_STATE["kind"] = u_prof["last_play"].get("kind", "yt")
             _LAST_PLAY_STATE["id"] = u_prof["last_play"]["id"]
 
         # 1. Ghi nhan lich su nghe nhac HDD rieng theo tung User khi Stream
@@ -5252,3 +5252,15 @@ async def _k17_private_playlists_mw(req, call_next):
     return await call_next(req)
 
 _SCACHE.clear()
+
+# Vá toàn bộ _USER_PROFILES trong RAM ngay khi khởi động để không bao giờ dính KeyError: 'kind'
+try:
+    for _u_k, _u_v in list(_USER_PROFILES.items()):
+        if isinstance(_u_v, dict) and isinstance(_u_v.get("last_play"), dict):
+            _lp = _u_v["last_play"]
+            _lp["kind"] = _lp.get("kind") or _lp.get("source") or "yt"
+            _lp["source"] = _lp.get("source") or _lp.get("kind") or "yt"
+    _save_user_profiles()
+except Exception:
+    pass
+
