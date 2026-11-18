@@ -3368,7 +3368,7 @@ async def _k11_mw_disabled(req, call_next):
 
 _SCACHE.clear()
 
-# --- K12: V1.7.0 TRUE 256KBPS M4A (V1.6.5 ENGINE) + STRICT USER PLAY TRACKING + AUTO MP3 CAST ---
+# --- K12: V1.6.0 TRUE 256KBPS M4A (OPUS 251 MASTER -> 256K AAC) + AUTO MP3 CAST ---
 _M4A_256_JOBS = {}
 _MP3_JOBS = {}
 _YT_DIRECT_URL = {}
@@ -3404,6 +3404,7 @@ def _is_cast_or_dlna_client(req, qd):
         return False
     return True
 
+# Khai bao chuan M4A 256kbps (32.000 bytes/giay) khop 100% giua Metadata va Ruot file de Wavio luon hien ORIGINAL!
 for _vid_k, _s_obj in list(_YL.items()):
     if isinstance(_s_obj, dict) and not str(_vid_k).startswith("hdd"):
         _s_obj["suffix"] = "m4a"
@@ -3449,7 +3450,7 @@ def _fmt(rt, js, cb=None):
             a.pop("transcodedSuffix", None)
             a.pop("transcodedContentType", None)
             d_v = int(a.get("duration") or 240) if str(a.get("duration", "")).isdigit() else 240
-            vid_c = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", str(a.get("id") or ""))
+            vid_c = _RE.sub(r"^(yt\d*_|al_)+", "", str(a.get("id") or ""))
             mp = _OS.path.join(_AUD_DIR, f"{vid_c}_256.m4a")
             if _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536:
                 a["size"] = str(_OS.path.getsize(mp))
@@ -3464,6 +3465,7 @@ def _get_direct_yt_url(vid):
     if vid in _YT_DIRECT_URL and _YT_DIRECT_URL[vid][1] > now:
         return _YT_DIRECT_URL[vid][0]
     try:
+        # Uu tien so 1 luong Opus 160kbps (itag=251) co dai tan rong 20kHz!
         c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "-f", "141/774/251/140/bestaudio/best", "-g", f"https://www.youtube.com/watch?v={vid}"]
         u = _SP.check_output(c, timeout=6).decode("utf-8", "ignore").strip().splitlines()[0]
         if u.startswith("http"):
@@ -3473,6 +3475,7 @@ def _get_direct_yt_url(vid):
         pass
     return ""
 
+# --- ENGINE 1: TRUE 256KBPS FRAGMENTED M4A (OPUS 251 -> 256K AAC + SIDX SEEK BAR) ---
 def _ens_m4a_256(vid):
     mp = _OS.path.join(_AUD_DIR, f"{vid}_256.m4a")
     dur_v = int((_YL.get(vid) or {}).get("duration") or 240) if str((_YL.get(vid) or {}).get("duration","")).isdigit() else 240
@@ -3489,6 +3492,7 @@ def _ens_m4a_256(vid):
 
     j = {"p": mp, "d": False, "total_sz": est_sz}
     _M4A_256_JOBS[vid] = j
+    # No duplicate yt-dlp on start
 
     def _run():
         try:
@@ -3497,6 +3501,7 @@ def _ens_m4a_256(vid):
                 "--concurrent-fragments", "4", "-f", "141/774/251/140/bestaudio/best",
                 "-o", "-", f"https://www.youtube.com/watch?v={vid}"
             ]
+            # Dong goi luong Opus 251 sang M4A AAC 256kbps CBR that su voi bang muc luc frag_keyframe+empty_moov
             c2 = [
                 "ffmpeg", "-y", "-loglevel", "error", "-threads", "2",
                 "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100",
@@ -3520,6 +3525,7 @@ def _ens_m4a_256(vid):
     _TH.Thread(target=_run, daemon=True).start()
     return j
 
+# --- ENGINE 2: MP3 CBR 256KBPS KHI CAST RA LOA EDIFIER MS50A / TV DLNA ---
 def _ens_mp3_cast(vid):
     mp = _OS.path.join(_AUD_DIR, f"{vid}.mp3")
     m4p = _OS.path.join(_AUD_DIR, f"{vid}_256.m4a")
@@ -3577,29 +3583,20 @@ async def _k12_seek_mw(req, call_next):
     qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
     qd = dict(qi)
     sid = str(qd.get("id") or "").strip()
-    uname_stream = str(qd.get("u") or "admin").strip().lower() or "admin"
-
-    if not sid:
+    if not sid or sid.startswith("hdd"):
         return await call_next(req)
 
-    # Ghi nhan lich su nghe cho DUNG USER dang goi /stream (Kể cả HDD lẫn YouTube, chỉ ghi ở byte đầu tiên!)
-    rng = req.headers.get("range") or req.headers.get("Range") or ""
-    is_first_chunk = (not rng) or rng.startswith("bytes=0-")
-
-    if sid.startswith("hdd"):
-        if is_first_chunk and "_record_u_hdd" in globals():
-            _DL_POOL.submit(_record_u_hdd, uname_stream, sid)
-        return await call_next(req)
-
-    clean_id = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", sid)
+    clean_id = _RE.sub(r"^(hdd\d*_|yt\d*_|al_)+", "", sid)
     m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_id)
     if not m:
         return await call_next(req)
 
     vid = m.group(1)
     lp = _A.get_running_loop()
-    if is_first_chunk and "_record_u_yt" in globals():
-        _DL_POOL.submit(_record_u_yt, uname_stream, vid)
+    uname_st = str(qd.get("u") or "admin").strip().lower() or "admin"
+    rng_st = req.headers.get("range") or req.headers.get("Range") or ""
+    if (not rng_st) or rng_st.startswith("bytes=0-"):
+        _DL_POOL.submit(_record_u_yt_direct, uname_st, vid)
 
     t_off = 0
     for tk in ("timeOffset", "timeoffset", "offset"):
@@ -3607,6 +3604,7 @@ async def _k12_seek_mw(req, call_next):
             t_off = int(qd[tk])
             break
 
+    rng = req.headers.get("range") or req.headers.get("Range") or ""
     st_b = 0
     end_b = None
     has_range = False
@@ -3627,6 +3625,7 @@ async def _k12_seek_mw(req, call_next):
     is_cast = _is_cast_or_dlna_client(req, qd)
     j = _ens_mp3_cast(vid) if is_cast else _ens_m4a_256(vid)
     m_type = "audio/mpeg" if is_cast else "audio/mp4"
+    f_fmt = "mp3" if is_cast else "ipod"
     f_codec = "libmp3lame" if is_cast else "aac"
 
     for _ in range(55):
@@ -4638,7 +4637,7 @@ async def _k15_user_isolation_mw(req, call_next):
         _CUR_USER_CTX.reset(tok)
 
 _SCACHE.clear()
-# --- K16: V1.6.8 FEATHERLIGHT SINGLE-TRACK ARTWORK (ACTIVE-TRACK PRIORITY FOR WAVIO) ---
+# --- K16: V1.6.5 STRICT SINGLE-TRACK ARTWORK (FORCE WAVIO UI REFRESH ON MINIMIZE/RESUME) ---
 try:
     from PIL import Image as _PIL_IMG
     _HAS_PIL = True
@@ -4647,8 +4646,9 @@ except Exception:
 
 _ART_DIR = "/data/art_cache_v35" if _OS.path.isdir("/data") else "/tmp/art_cache_v35"
 _OS.makedirs(_ART_DIR, exist_ok=True)
-_FAST_ART_POOL = _CF.ThreadPoolExecutor(max_workers=6)
-_ACTIVE_VID = {"id": ""}
+_ART_RAM.clear()
+_FAST_ART_POOL = _CF.ThreadPoolExecutor(max_workers=8)
+_CUR_PLAYING_ART_ID = {"id": ""}
 
 def _fix_url_500(u):
     u = str(u or "").strip()
@@ -4656,64 +4656,107 @@ def _fix_url_500(u):
         u = "https:" + u
     if "yt3.ggpht.com" in u or "googleusercontent.com" in u:
         u = _RE.sub(r"=s\d+[^/]*$", "=s500-c-k-c0x00ffffff-no-rj", u)
-        u = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l90-rj", u)
+        u = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w500-h500-l92-rj", u)
     return u
 
-def _crop_500_ram(d, mode="square"):
+def _crop_500_square(d, mode="square"):
     if not d or len(d) < 250:
         return None
     if mode == "square" and d.startswith(b"\xff\xd8") and len(d) < 95000:
         return d
 
-    # Xu ly 100% tren RAM bang PIL (chi mat 0.003 giay, KHONG BAO GIO GOI FFMPEG lam nang may!)
     if _HAS_PIL:
         try:
             im = _PIL_IMG.open(_IO.BytesIO(d)).convert("RGB")
             w, h = im.size
-            if mode == "hq43" and w == 480 and h == 360:
-                # Cat bo 2 vien den 45px tren/duoi cua hqdefault.jpg (lay vung 480x270 o giua)
-                im = im.crop((0, 45, 480, 315))
-                w, h = im.size
+            if mode == "hq43":
+                h_169 = int(w * 9 / 16)
+                if h > h_169:
+                    top = (h - h_169) // 2
+                    im = im.crop((0, top, w, top + h_169))
+                    w, h = im.size
             side = min(w, h)
             left = (w - side) // 2
             top = (h - side) // 2
             im = im.crop((left, top, left + side, top + side))
             if side != 500:
-                im = im.resize((500, 500), getattr(_PIL_IMG, "Resampling", _PIL_IMG).BILINEAR)
+                im = im.resize((500, 500), getattr(_PIL_IMG, "Resampling", _PIL_IMG).LANCZOS)
             buf = _IO.BytesIO()
-            im.save(buf, format="JPEG", quality=85)
+            im.save(buf, format="JPEG", quality=88, optimize=True)
             out_b = buf.getvalue()
             if len(out_b) > 300:
                 return out_b
         except Exception:
             pass
 
+    tid = f"{_TH.get_ident()}_{_RND.randint(1000,9999)}"
+    fin = f"/tmp/art_in_{tid}.img"
+    fout = f"/tmp/art_out_{tid}.jpg"
+    try:
+        open(fin, "wb").write(d)
+        if mode == "maxres":
+            vf = "scale=890:500:force_original_aspect_ratio=increase,crop=500:500"
+        elif mode == "hq43":
+            vf = "crop=iw:iw*9/16:0:(ih-iw*9/16)/2,scale=890:500:force_original_aspect_ratio=increase,crop=500:500"
+        else:
+            vf = "scale=500:500:force_original_aspect_ratio=increase,crop=500:500"
+
+        p = _SP.run([
+            "ffmpeg", "-y", "-loglevel", "error", "-threads", "1", "-i", fin,
+            "-frames:v", "1", "-vf", vf,
+            "-pix_fmt", "yuvj420p", "-strict", "-2",
+            "-map_metadata", "-1", "-q:v", "3", fout
+        ], stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=3.0)
+        if p.returncode == 0 and _OS.path.exists(fout) and _OS.path.getsize(fout) > 300:
+            out_b = open(fout, "rb").read()
+            if out_b.startswith(b"\xff\xd8"):
+                return out_b
+    except Exception:
+        pass
+    finally:
+        for fp in (fin, fout):
+            try:
+                if _OS.path.exists(fp):
+                    _OS.remove(fp)
+            except Exception:
+                pass
     return d if d.startswith(b"\xff\xd8") else None
 
-def _fetch_yt_500_light(vid):
+def _fetch_yt_500_vid(vid):
     if not _RE.match(r"^[A-Za-z0-9_-]{11}$", str(vid or "")):
         return None
-    # 1. Neu la bai YouTube Music co san anh vuong -> Tai thang anh 500x500 (~25KB, 0% CPU)
     if vid in _YTM_THUMB:
         tu = _fix_url_500(_YTM_THUMB[vid])
         d = _dl_fast(tu, 400, 1.2)
         if d:
-            jpg = _crop_500_ram(d, "square")
+            jpg = _crop_500_square(d, "square")
             if jpg:
                 return jpg
 
-    # 2. Chi khi la BAI DANG PHAT (_ACTIVE_VID) thi moi thu lay maxresdefault.
-    # Cac bai khac trong danh sach chi lay duy nhat hqdefault (~18KB) cat tren RAM trong 3ms -> Sieu nhe!
-    if vid == _ACTIVE_VID.get("id"):
-        d_max = _dl_fast(f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 1800, 0.55)
+    f_max = _FAST_ART_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 1800, 0.75)
+    f_hq  = _FAST_ART_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 600, 1.2)
+
+    try:
+        d_max = f_max.result(timeout=0.8)
         if d_max:
-            jpg = _crop_500_ram(d_max, "maxres")
+            jpg = _crop_500_square(d_max, "maxres")
             if jpg:
                 return jpg
+    except Exception:
+        pass
 
-    d_hq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 500, 1.1)
-    if d_hq:
-        return _crop_500_ram(d_hq, "hq43")
+    try:
+        d_hq = f_hq.result(timeout=1.2)
+        if d_hq:
+            jpg = _crop_500_square(d_hq, "hq43")
+            if jpg:
+                return jpg
+    except Exception:
+        pass
+
+    d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 400, 1.0)
+    if d_mq:
+        return _crop_500_square(d_mq, "maxres")
     return None
 
 def _norm_art_key(cid):
@@ -4753,15 +4796,21 @@ def _get_art_600(cid):
         cf = _OS.path.join(_ART_DIR, _H.md5(ckey.encode()).hexdigest() + ".jpg")
         if _OS.path.exists(cf) and _OS.path.getsize(cf) > 300:
             d = open(cf, "rb").read()
-            if len(_ART_RAM) < 400:
+            if len(_ART_RAM) < 300:
                 _ART_RAM[ckey] = d
             return d
 
         if kind == "ar":
+            if k_id not in _ARTIST_THUMB:
+                aname = _resolve_artist_name(k_id)
+                if aname:
+                    _yt_web_search(aname, "")
+                    if k_id not in _ARTIST_THUMB:
+                        _ytm_search_artists_and_pls(aname)
             tu = _ARTIST_THUMB.get(k_id, "")
             if tu:
-                d = _dl_fast(_fix_url_500(tu), 300, 1.2)
-                jpg = _crop_500_ram(d, "square")
+                d = _dl_fast(_fix_url_500(tu), 300, 1.5)
+                jpg = _crop_500_square(d, "square")
                 if jpg:
                     open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
             return None
@@ -4771,30 +4820,40 @@ def _get_art_600(cid):
             if tu:
                 m_vi = _RE.search(r"/vi/([A-Za-z0-9_-]{11})/", tu)
                 if m_vi:
-                    jpg = _fetch_yt_500_light(m_vi.group(1))
+                    jpg = _fetch_yt_500_vid(m_vi.group(1))
                     if jpg:
                         open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
-                d = _dl_fast(_fix_url_500(tu), 300, 1.2)
-                jpg = _crop_500_ram(d, "hq43" if "hqdefault" in tu else "square")
+                d = _dl_fast(_fix_url_500(tu), 300, 1.5)
+                jpg = _crop_500_square(d, "hq43" if "hqdefault" in tu else "square")
+                if jpg:
+                    open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
+            tr_list = _PL_TRACKS_CACHE.get(k_id) or _yt_playlist_tracks(k_id)
+            if tr_list and tr_list[0].get("id"):
+                jpg = _fetch_yt_500_vid(tr_list[0]["id"])
                 if jpg:
                     open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
             return None
 
         if kind == "hdd" and _HDD:
-            for cand in [raw_id, k_id, "al-" + k_id]:
-                if not cand:
-                    continue
+            # Uu tien lay anh nhung rieng cua tung file nhac (raw_id) truoc khi lay anh chung cua Album!
+            cands = []
+            for x in [raw_id, k_id, "al-" + k_id, "mf-" + raw_id, "al-" + raw_id]:
+                if x and x not in cands:
+                    cands.append(x)
+            for cand in cands:
                 try:
                     cq = [x for x in _hdd_q([("id", cand), ("size", "500")]) if x[0] != "f"]
-                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent": "Resonus"}), timeout=2.0, context=_CTX) as r:
+                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent": "Resonus"}), timeout=2.5, context=_CTX) as r:
                         d = r.read()
                         if r.status == 200 and len(d) > 300 and not d.lstrip().startswith(b"<"):
-                            open(cf, "wb").write(d); _ART_RAM[ckey] = d; return d
+                            jpg = _crop_500_square(d, "square")
+                            if jpg:
+                                open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
                 except Exception:
                     pass
 
         if _RE.match(r"^[A-Za-z0-9_-]{11}$", k_id):
-            jpg = _fetch_yt_500_light(k_id)
+            jpg = _fetch_yt_500_vid(k_id)
             if jpg:
                 open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
     return None
@@ -4802,6 +4861,7 @@ def _get_art_600(cid):
 def _get_art_bytes(cid, req_size=0):
     return _get_art_600(cid)
 
+# XOA BO 100% PRELOAD: Khong tai truoc bat ky bai nao khi mo danh sach!
 def _prewarm_list(ids):
     return
 
@@ -4813,11 +4873,14 @@ def _patched_fmt_k16(rt, js, cb=None):
         sid = str(a.get("id") or "")
         ca = str(a.get("coverArt") or "")
         if x.tag in ("song", "child", "entry") and a.get("isDir") != "true":
+            # BI QUYET CHONG KET COVER KHI MINIMIZE TREN WAVIO:
+            # Gan cho MOI BAI HAT mot ma coverArt & albumId DOC LAP theo chinh ID cua bai hat do!
+            # Khi qua bai moi va mo lai App tu Minimize, Wavio thay albumId & coverArt thay doi 100% nen buoc phai ve lai Cover moi!
             if sid.startswith("hdd"):
                 alid = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(a.get("albumId") or a.get("parent") or ""))
                 rid_clean = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", sid)
                 if alid and rid_clean:
-                    _ART_MAP[rid_clean] = alid
+                    _ART_MAP[rid_clean] = rid_clean
                 a["coverArt"] = "hdd35_trk_" + rid_clean
                 a["albumId"] = "hdd_al_" + rid_clean
                 a["parent"] = "hdd_al_" + rid_clean
@@ -4854,30 +4917,36 @@ async def _k16_ondemand_art_mw(req, call_next):
     qd = dict(qi)
     lp = _A.get_running_loop()
 
-    # 1. Tra anh sieu nhe (0% ffmpeg, cat bang PIL tren RAM trong 3ms) + Cache 24h de Wavio khong tai lai anh da co!
+    # 1. Tra anh 500x500 voi Cache-Control: no-cache de khi mo lai App tu Minimize, Wavio LUON cap nhat anh cua bai dang hat!
     if "/getcoverart" in pl:
         cid = str(qd.get("id") or "").strip()
         d = await lp.run_in_executor(_FAST_ART_POOL, _get_art_600, cid) if cid else None
         if d:
+            etag = f'"{_H.md5((cid + str(len(d))).encode()).hexdigest()}"'
             return _R(
                 content=d,
                 media_type="image/jpeg",
                 headers={
                     **_CORS,
                     "Content-Length": str(len(d)),
-                    "Cache-Control": "public, max-age=86400"
+                    "Cache-Control": "no-cache, must-revalidate",
+                    "ETag": etag
                 }
             )
-        return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1))})
+        return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1)), "Cache-Control": "no-store"})
 
-    # 2. Khi Play nhac: Chi danh dau va tai anh cho DUNG 1 BAI DANG PHAT (Non-blocking, sieu nhe!)
+    # 2. Choi bai nao CHI LOAD DUNG COVER BAI DO (Zero background preload!)
     if "/stream" in pl or "/download" in pl:
         sid = str(qd.get("id") or "").strip()
         rng = req.headers.get("range") or req.headers.get("Range") or ""
         if sid and ((not rng) or rng.startswith("bytes=0-")):
-            _, k_id, _ = _norm_art_key(sid)
-            _ACTIVE_VID["id"] = k_id
-            _FAST_ART_POOL.submit(_get_art_600, sid)
+            _CUR_PLAYING_ART_ID["id"] = sid
+            kind, k_id, _ = _norm_art_key(sid)
+            if f"{kind}_{k_id}" not in _ART_RAM:
+                try:
+                    await _A.wait_for(lp.run_in_executor(_FAST_ART_POOL, _get_art_600, sid), timeout=0.35)
+                except Exception:
+                    pass
 
     return await call_next(req)
 
@@ -5187,109 +5256,118 @@ async def _k17_private_playlists_mw(req, call_next):
 
 _SCACHE.clear()
 
+# --- K18: V1.7.1 SAFE USER ISOLATION (RECENT, MOST PLAYED, PLAYLISTS) & SYMFONIUM SYNC FIX ---
+import contextvars as _CV
+_CUR_USER_CTX = _CV.ContextVar("_CUR_USER_CTX", default="admin")
 
+_OBJ_CONTAINERS = {
+    "albumList", "albumList2", "starred", "starred2", "playlists",
+    "artists", "indexes", "genres", "nowPlaying", "playQueue",
+    "bookmarks", "musicFolders", "randomSongs", "similarSongs",
+    "similarSongs2", "topSongs", "searchResult2", "searchResult3"
+}
 
-# --- K18: V1.7.0 100% STRICT USER ISOLATION (RECENT, MOST PLAYED, PLAYLISTS) & SYMFONIUM FULL SYNC ---
-# 1. Bo sung day du cac truong danh sach & so nguyen de Symfonium parse JSON/XML khong bao gio bi Unsuccessful!
-_LSTS.update({
-    "musicFolder", "index", "artist", "album", "song", "child",
-    "entry", "playlist", "genre", "structuredLyrics", "line",
-    "openSubsonicExtensions", "versions", "bookmark", "folder"
-})
-_INTS.update({
-    "size", "duration", "bitRate", "track", "discNumber", "year",
-    "playCount", "songCount", "albumCount", "offset", "start",
-    "samplingRate", "bitDepth", "channelCount", "userRating",
-    "position", "minutesAgo", "playerId"
-})
+# Sua ham _x2d de khi the danh sach rong (khong co con) luon tra ve {} thay vi "" -> Symfonium khong bao gio loi JSON!
+_orig_x2d_k18 = _x2d
+def _x2d(e, d=0):
+    res = _orig_x2d_k18(e, d)
+    if res == "" and e.tag in _OBJ_CONTAINERS:
+        return {}
+    return res
 
-def _clean_u_name(u):
+def _clean_u(u):
     s = str(u or "").strip().lower()
     return s if s else "admin"
 
-# Vo hieu hoa viec ghi chung vao _YR khi khong co User cu the, ép MỌI ghi nhận phải đi qua đúng tên tài khoản `u`!
-def _record_u_yt(u, vid):
-    uname = _clean_u_name(u)
-    clean_v = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", str(vid or "").strip())
-    m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
-    if not m:
-        return
-    v = m.group(1)
-    _ensure_vid_meta(v)
-    sd = _YL.get(v) or {}
-    p = _get_u_prof(uname)
-    item_k = f"yt:{v}"
-    now_s = _now_iso()
-    with _USER_PROF_LOCK:
-        rec = p.setdefault("recent", [])
-        if item_k in rec:
-            rec.remove(item_k)
-        rec.insert(0, item_k)
-        del rec[120:]
-        cnts = p.setdefault("counts", {})
-        cnts[item_k] = int(cnts.get(item_k, 0)) + 1
-        p.setdefault("ts", {})[item_k] = now_s
-        p["last_play"] = {
-            "source": "yt",
-            "id": v,
-            "title": str(sd.get("title") or ""),
-            "artist": str(sd.get("artist") or ""),
-            "ts": _TM.time()
-        }
-    _save_user_profiles()
+def _record_u_yt_direct(u, vid):
+    try:
+        uname = _clean_u(u)
+        clean_v = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", str(vid or "").strip())
+        m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
+        if not m:
+            return
+        v = m.group(1)
+        _ensure_vid_meta(v)
+        sd = _YL.get(v) or {}
+        p = _get_u_prof(uname)
+        item_k = f"yt:{v}"
+        now_s = _now_iso()
+        with _USER_PROF_LOCK:
+            rec = p.setdefault("recent", [])
+            if item_k in rec:
+                rec.remove(item_k)
+            rec.insert(0, item_k)
+            del rec[100:]
+            cnts = p.setdefault("counts", {})
+            cnts[item_k] = int(cnts.get(item_k, 0)) + 1
+            p.setdefault("ts", {})[item_k] = now_s
+            p["last_play"] = {
+                "source": "yt",
+                "id": v,
+                "title": str(sd.get("title") or ""),
+                "artist": str(sd.get("artist") or ""),
+                "ts": _TM.time()
+            }
+        _save_user_profiles()
+    except Exception:
+        pass
 
-def _record_u_hdd(u, sid):
-    uname = _clean_u_name(u)
-    d = _fetch_single_hdd_meta(sid)
-    if not d:
-        return
-    raw_s = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(d.get("id") or sid))
-    raw_al = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(d.get("albumId") or d.get("parent") or raw_s))
-    al_id = "hdd_al-" + raw_al
-    song_id = "hdd_" + raw_s
-    p = _get_u_prof(uname)
-    item_k = f"hdd:{al_id}"
-    now_s = _now_iso()
-    with _USER_PROF_LOCK:
-        rec = p.setdefault("recent", [])
-        if item_k in rec:
-            rec.remove(item_k)
-        rec.insert(0, item_k)
-        del rec[120:]
-        cnts = p.setdefault("counts", {})
-        cnts[item_k] = int(cnts.get(item_k, 0)) + 1
-        p.setdefault("ts", {})[item_k] = now_s
-        p.setdefault("hdd_meta", {})[item_k] = {
-            "id": al_id,
-            "parent": str(d.get("artistId") or "hdd_ar"),
-            "isDir": "true",
-            "title": str(d.get("album") or d.get("title") or "HDD Album"),
-            "name": str(d.get("album") or d.get("title") or "HDD Album"),
-            "album": str(d.get("album") or d.get("title") or "HDD Album"),
-            "artist": str(d.get("artist") or "Artist"),
-            "coverArt": song_id,
-            "seedSongId": song_id
-        }
-        p["last_play"] = {
-            "source": "hdd",
-            "id": song_id,
-            "title": str(d.get("title") or ""),
-            "artist": str(d.get("artist") or ""),
-            "ts": _TM.time()
-        }
-    _save_user_profiles()
+def _record_u_hdd_direct(u, sid):
+    try:
+        uname = _clean_u(u)
+        d = _fetch_single_hdd_meta(sid)
+        if not d:
+            return
+        raw_s = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(d.get("id") or sid))
+        raw_al = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(d.get("albumId") or d.get("parent") or raw_s))
+        al_id = "hdd_al-" + raw_al
+        song_id = "hdd_" + raw_s
+        p = _get_u_prof(uname)
+        item_k = f"hdd:{al_id}"
+        now_s = _now_iso()
+        with _USER_PROF_LOCK:
+            rec = p.setdefault("recent", [])
+            if item_k in rec:
+                rec.remove(item_k)
+            rec.insert(0, item_k)
+            del rec[100:]
+            cnts = p.setdefault("counts", {})
+            cnts[item_k] = int(cnts.get(item_k, 0)) + 1
+            p.setdefault("ts", {})[item_k] = now_s
+            p.setdefault("hdd_meta", {})[item_k] = {
+                "id": al_id,
+                "parent": str(d.get("artistId") or "hdd_ar"),
+                "isDir": "true",
+                "title": str(d.get("album") or d.get("title") or "HDD Album"),
+                "name": str(d.get("album") or d.get("title") or "HDD Album"),
+                "album": str(d.get("album") or d.get("title") or "HDD Album"),
+                "artist": str(d.get("artist") or "Artist"),
+                "coverArt": song_id,
+                "seedSongId": song_id
+            }
+            p["last_play"] = {
+                "source": "hdd",
+                "id": song_id,
+                "title": str(d.get("title") or ""),
+                "artist": str(d.get("artist") or ""),
+                "ts": _TM.time()
+            }
+        _save_user_profiles()
+    except Exception:
+        pass
 
-# Ghi de _record_yt_play va _record_hdd_play_for_user de khong bao gio bi ro ri sang tai khoan khac!
+# Chan cac luong tim kiem ngam tu dong ghi chen vao lich su chung:
 def _record_yt_play(vid, is_search=False):
     if is_search:
         return
-    u = _clean_u_name(_CUR_USER_CTX.get())
-    _record_u_yt(u, vid)
+    u = _CUR_USER_CTX.get()
+    if u:
+        _record_u_yt_direct(u, vid)
 
 def _record_hdd_play_for_user(u, sid):
-    _record_u_hdd(u, sid)
+    _record_u_hdd_direct(u, sid)
 
-def _build_strict_user_album_node(u, item_k, idx):
+def _make_u_album_entry(u, item_k):
     p = _get_u_prof(u)
     p_cnt = str((p.get("counts") or {}).get(item_k, 1))
     p_ts = str((p.get("ts") or {}).get(item_k) or _now_iso())
@@ -5301,10 +5379,10 @@ def _build_strict_user_album_node(u, item_k, idx):
         at = dict(hm)
         at["playCount"] = p_cnt
         at["played"] = p_ts
-        at["created"] = p_ts
-        at["songCount"] = "10"
-        at["duration"] = "2400"
-        at["year"] = "2026"
+        at["created"] = str(at.get("created") or "2026-01-01T00:00:00.000Z")
+        at["songCount"] = str(at.get("songCount") or "10")
+        at["duration"] = str(at.get("duration") or "2400")
+        at["year"] = str(at.get("year") or "2026")
         return at
 
     if item_k.startswith("yt:"):
@@ -5316,48 +5394,51 @@ def _build_strict_user_album_node(u, item_k, idx):
             return None
         tit = str(s.get("title") or vid)
         art = str(s.get("artist") or "YouTube")
+        arid = str(s.get("artistId") or _artist_id(art))
         return {
             "id": "al_" + vid,
-            "parent": str(s.get("artistId") or _artist_id(art)),
+            "parent": arid,
+            "artistId": arid,
             "isDir": "true",
             "title": tit,
             "name": tit,
             "album": tit,
             "artist": art,
-            "artistId": str(s.get("artistId") or _artist_id(art)),
             "coverArt": "yt35_trk_" + vid,
             "songCount": "25",
             "duration": str(s.get("duration") or "240"),
             "playCount": p_cnt,
             "played": p_ts,
-            "created": str(s.get("created") or p_ts),
+            "created": str(s.get("created") or "2026-01-01T00:00:00.000Z"),
             "year": "2026"
         }
     return None
 
-# Xay dung danh sach Album (Recently Played, Most Played, Newest, Random, Alphabetical) CACH LY TUYET DOI 100% THEO USER
-# Dong thoi ho tro phan trang `offset` & `size` chuan xac 100% de Symfonium Sync khong bi lap vo tan!
-def _build_isolated_album_list(u, ltype, sz, off, tag_name):
-    uname = _clean_u_name(u)
+def _build_strict_u_album_list(u, ltype, sz, off, tag_name):
+    uname = _clean_u(u)
     p = _get_u_prof(uname)
     rt = _E.Element("subsonic-response", status="ok")
     al_el = _E.SubElement(rt, tag_name)
-
     items = []
+
     if ltype == "recent":
-        # CHI LAY 100% TU LICH SU RIENG CUA USER NAY (Tuyet doi khong tron _YR chung!)
+        # CHI LAY 100% TU LICH SU RIENG CUA USER NAY (Khong bao gio lay tu _YR chung!)
         for k in list(p.get("recent") or []):
-            nd = _build_strict_user_album_node(uname, k, len(items))
+            nd = _make_u_album_entry(uname, k)
             if nd:
                 items.append(nd)
 
     elif ltype == "frequent":
-        # CHI LAY 100% TU BO DEM LUOT NGHE RIENG CUA USER NAY!
+        # CHI LAY 100% TU MOST PLAYED RIENG CUA USER NAY!
         cnts = p.get("counts") or {}
-        sorted_k = sorted(cnts.keys(), key=lambda k: (-int(cnts.get(k, 0)), -(list(reversed(p.get("recent") or [])).index(k) if k in (p.get("recent") or []) else -1)))
+        rec_list = list(p.get("recent") or [])
+        sorted_k = sorted(
+            cnts.keys(),
+            key=lambda k: (-int(cnts.get(k, 0)), rec_list.index(k) if k in rec_list else 9999)
+        )
         for k in sorted_k:
             if int(cnts.get(k, 0)) > 0:
-                nd = _build_strict_user_album_node(uname, k, len(items))
+                nd = _make_u_album_entry(uname, k)
                 if nd:
                     items.append(nd)
 
@@ -5366,25 +5447,22 @@ def _build_isolated_album_list(u, ltype, sz, off, tag_name):
         for alid, ts in list(st_alb.items()):
             clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", alid)
             item_k = f"hdd:{alid}" if alid.startswith("hdd") else f"yt:{clean_v}"
-            nd = _build_strict_user_album_node(uname, item_k, len(items))
+            nd = _make_u_album_entry(uname, item_k)
             if nd:
                 nd["starred"] = str(ts)
                 items.append(nd)
 
     else:
-        # Cac muc chung (newest, random, alphabeticalByName, alphabeticalByArtist)
-        # Khi Symfonium Sync goi alphabeticalByName voi offset=0, 500... -> Phai phan trang dung `off : off + sz`!
-        seen_ids = set()
-        # 1. Lay cac bai trong kho rieng cua User truoc
+        seen = set()
         for k in list(p.get("recent") or []):
-            nd = _build_strict_user_album_node(uname, k, len(items))
-            if nd and nd["id"] not in seen_ids:
-                seen_ids.add(nd["id"])
+            nd = _make_u_album_entry(uname, k)
+            if nd and nd["id"] not in seen:
+                seen.add(nd["id"])
                 items.append(nd)
-        # 2. Neu la alphabetical (Symfonium Sync) hoac newest/random: Lay them tu HDD va YouTube nhung chi trong trang hien tai
+
         if _HDD:
             try:
-                hq = _hdd_q([("type", "alphabeticalByName" if "alpha" in ltype else "newest"), ("size", "500"), ("offset", "0")])
+                hq = _hdd_q([("type", "alphabeticalByName" if "alpha" in ltype.lower() else "newest"), ("size", "500"), ("offset", "0")])
                 with _U.urlopen(_U.Request(f"{_HDD}/rest/getAlbumList2.view?{_ue(hq)}", headers={"User-Agent": "Resonus"}), timeout=4, context=_CTX) as r:
                     hrt = _E.fromstring(r.read())
                     for x in hrt.iter():
@@ -5401,19 +5479,20 @@ def _build_isolated_album_list(u, ltype, sz, off, tag_name):
                             ha.setdefault("songCount", "10")
                             ha.setdefault("duration", "2400")
                             ha.setdefault("created", "2026-01-01T00:00:00.000Z")
-                            if ha["id"] not in seen_ids:
-                                seen_ids.add(ha["id"])
+                            ha.setdefault("year", "2026")
+                            if ha["id"] not in seen:
+                                seen.add(ha["id"])
                                 items.append(ha)
             except Exception:
                 pass
 
-        if ltype in ("random", "newest") and len(items) < 30:
-            for vid, s in list(_YL.items())[:60]:
+        if ltype in ("random", "newest") and len(items) < 25:
+            for vid, s in list(_YL.items())[:40]:
                 if isinstance(s, dict) and not str(vid).startswith("hdd"):
                     aid = "al_" + vid
-                    if aid not in seen_ids:
-                        seen_ids.add(aid)
-                        nd = _build_strict_user_album_node(uname, f"yt:{vid}", len(items))
+                    if aid not in seen:
+                        seen.add(aid)
+                        nd = _make_u_album_entry(uname, f"yt:{vid}")
                         if nd:
                             items.append(nd)
 
@@ -5424,23 +5503,21 @@ def _build_isolated_album_list(u, ltype, sz, off, tag_name):
         elif "alpha" in ltype.lower():
             items.sort(key=lambda x: str(x.get("name") or x.get("title") or "").lower())
 
-    # Cắt đúng phân trang [off : off + sz] (Khi off >= len(items) sẽ trả về danh sách rỗng để Symfonium kết thúc Sync thành công!)
+    # Phan trang chuan xac theo `off` va `sz` (Khi off >= len(items), tra ve rong de Symfonium ket thuc Sync!)
     sliced = items[off : off + sz]
     child_tag = "album" if "2" in tag_name else "child"
     for nd in sliced:
         _E.SubElement(al_el, child_tag, **nd)
     return rt
 
-# Ham ho tro Symfonium Full Library Sync (getArtists, getIndexes, getAlbum, getMusicDirectory)
-def _build_symfonium_artists_xml(u, is_v2=True):
-    uname = _clean_u_name(u)
+def _build_symfonium_artists_safe(u, is_v2=True):
+    uname = _clean_u(u)
     p = _get_u_prof(uname)
     rt = _E.Element("subsonic-response", status="ok")
-    root_tag = "artists" if is_v2 else "indexes"
-    ar_root = _E.SubElement(rt, root_tag, ignoredArticles="The El La Los Las Le Les", lastModified=str(int(_TM.time() * 1000)))
+    r_tag = "artists" if is_v2 else "indexes"
+    ar_root = _E.SubElement(rt, r_tag, ignoredArticles="The El La Los Las Le Les", lastModified=str(int(_TM.time() * 1000)))
 
     ar_map = {}
-    # 1. Lay Nghe si tu HDD Navidrome
     if _HDD:
         try:
             hq = _hdd_q([])
@@ -5456,29 +5533,20 @@ def _build_symfonium_artists_xml(u, is_v2=True):
         except Exception:
             pass
 
-    # 2. Lay Nghe si tu lich su & playlist cua User
-    user_vids = set()
     for k in (p.get("recent") or []):
         if k.startswith("yt:"):
-            user_vids.add(k[3:])
-    for pl_obj in (p.get("playlists") or {}).values():
-        if isinstance(pl_obj, dict):
-            for sid in (pl_obj.get("songs") or pl_obj.get("tracks") or []):
-                if not str(sid).startswith("hdd"):
-                    user_vids.add(_RE.sub(r"^(yt\d*_|al_|trk_)+", "", str(sid)))
-
-    for vid in user_vids:
-        s = _YL.get(vid)
-        if isinstance(s, dict):
-            aname = str(s.get("artist") or "YouTube").strip()
-            aid = str(s.get("artistId") or _artist_id(aname))
-            if aid not in ar_map:
-                ar_map[aid] = {"id": aid, "name": aname, "albumCount": "1", "coverArt": "yt35_trk_" + vid}
-            else:
-                ar_map[aid]["albumCount"] = str(int(ar_map[aid]["albumCount"]) + 1)
+            vid = k[3:]
+            s = _YL.get(vid)
+            if isinstance(s, dict):
+                aname = str(s.get("artist") or "YouTube").strip()
+                aid = str(s.get("artistId") or _artist_id(aname))
+                if aid not in ar_map:
+                    ar_map[aid] = {"id": aid, "name": aname, "albumCount": "1", "coverArt": "yt35_trk_" + vid}
+                else:
+                    ar_map[aid]["albumCount"] = str(int(ar_map[aid]["albumCount"]) + 1)
 
     if not ar_map:
-        ar_map["ar_mirasonic"] = {"id": "ar_mirasonic", "name": "Mirasonic YouTube", "albumCount": "1", "coverArt": "ar_mirasonic"}
+        ar_map["ar_mirasonic"] = {"id": "ar_mirasonic", "name": "Mirasonic", "albumCount": "1", "coverArt": "ar_mirasonic"}
 
     groups = {}
     for aid, ainfo in ar_map.items():
@@ -5492,164 +5560,88 @@ def _build_symfonium_artists_xml(u, is_v2=True):
         idx_el = _E.SubElement(ar_root, "index", name=let)
         for ainfo in sorted(groups[let], key=lambda x: x["name"].lower()):
             _E.SubElement(idx_el, "artist", **ainfo)
-
-    return rt
-
-def _build_symfonium_single_album_xml(u, al_id):
-    s_id = str(al_id or "").strip()
-    clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", s_id)
-    if not _RE.match(r"^[A-Za-z0-9_-]{11}$", clean_v):
-        return None
-    s = _YL.get(clean_v) or _ensure_vid_meta(clean_v)
-    if not s:
-        return None
-    tit = str(s.get("title") or clean_v)
-    art = str(s.get("artist") or "YouTube")
-    arid = str(s.get("artistId") or _artist_id(art))
-    dur = str(s.get("duration") or "240") if str(s.get("duration", "")).isdigit() else "240"
-
-    rt = _E.Element("subsonic-response", status="ok")
-    al_el = _E.SubElement(
-        rt, "album",
-        id="al_" + clean_v,
-        name=tit,
-        title=tit,
-        album=tit,
-        artist=art,
-        artistId=arid,
-        coverArt="yt35_trk_" + clean_v,
-        songCount="1",
-        duration=dur,
-        created=str(s.get("created") or "2026-01-01T00:00:00.000Z"),
-        year="2026"
-    )
-    sc = dict(s)
-    sc["id"] = clean_v
-    sc["parent"] = "al_" + clean_v
-    sc["albumId"] = "al_" + clean_v
-    sc["artistId"] = arid
-    sc["isDir"] = "false"
-    sc["type"] = "music"
-    sc["isVideo"] = "false"
-    sc["track"] = "1"
-    sc["discNumber"] = "1"
-    sc["year"] = "2026"
-    sc["suffix"] = "m4a"
-    sc["contentType"] = "audio/mp4"
-    sc["bitRate"] = "256"
-    _E.SubElement(al_el, "song", **sc)
     return rt
 
 @app.middleware("http")
-async def _k18_master_guard_mw(req, call_next):
-    if req.method == "OPTIONS":
-        return _R(content=b"", status_code=200, headers=_CORS)
-    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
-    if not pl.startswith("/rest/"):
-        return await call_next(req)
-
-    # 1. CHUYEN TOAN BO THAM SO POST BODY VAO QUERY_STRING NGAY O TANG NGOAI CUNG!
-    # Giup Symfonium (vốn dùng POST cho mọi lệnh Sync) va cac middleware ben duoi doc duoc đúng `u`, `type`, `offset`, `size`!
-    if req.method == "POST":
-        bf = await req.body()
-        if bf:
-            try:
-                extra = [(str(k), str(v)) for k, v in _J.loads(bf).items()] if bf.strip().startswith(b"{") else _pq(bf.decode("utf-8", "ignore"), keep_blank_values=True)
-                old_qs = req.scope.get("query_string", b"").decode("utf-8", "ignore")
-                new_qs = (old_qs + "&" + _ue(extra)).lstrip("&")
-                req.scope["query_string"] = new_qs.encode("utf-8")
-            except Exception:
-                pass
-        async def _rc():
-            return {"type": "http.request", "body": bf, "more_body": False}
-        req._receive = _rc
-
-    _load_addon_opts()
-    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
-    qd = dict(qi)
-    fv = qd.get("f", "").lower()
-    js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
-    cb = qd.get("callback") if fv == "jsonp" else None
-    if not _check_auth(qd):
-        return await call_next(req)
-
-    uname = _clean_u_name(qd.get("u"))
-    cl_app = str(qd.get("c") or req.headers.get("user-agent") or "").lower()
-    is_symfonium = "symfonium" in cl_app
-    lp = _A.get_running_loop()
-
-    tok = _CUR_USER_CTX.set(uname)
+async def _k18_safe_sync_and_user_mw(req, call_next):
     try:
-        # 2. OpenSubsonic Extensions & MusicFolders (Symfonium kiem tra dau tien khi Sync)
-        if "getopensubsonicextensions" in pl:
-            rt = _E.Element("subsonic-response", status="ok")
-            ext = _E.SubElement(rt, "openSubsonicExtensions")
-            for ename in ("transcodeOffset", "formPost", "songLyrics"):
-                e_el = _E.SubElement(ext, "openSubsonicExtension", name=ename)
-                v_el = _E.SubElement(e_el, "versions")
-                v_el.text = "1"
-            return _fmt(rt, js, cb)
+        if req.method == "OPTIONS":
+            return _R(content=b"", status_code=200, headers=_CORS)
+        p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+        if not pl.startswith("/rest/"):
+            return await call_next(req)
 
-        if "getmusicfolders" in pl:
-            rt = _E.Element("subsonic-response", status="ok")
-            mf = _E.SubElement(rt, "musicFolders")
-            _E.SubElement(mf, "musicFolder", id="1", name="Mirasonic Library")
-            return _fmt(rt, js, cb)
+        # Gop tham so POST body vao query_string de Symfonium goi POST van doc duoc day du `u`, `type`, `offset`, `size`
+        if req.method == "POST":
+            bf = await req.body()
+            if bf:
+                try:
+                    extra = [(str(k), str(v)) for k, v in _J.loads(bf).items()] if bf.strip().startswith(b"{") else _pq(bf.decode("utf-8", "ignore"), keep_blank_values=True)
+                    old_qs = req.scope.get("query_string", b"").decode("utf-8", "ignore")
+                    req.scope["query_string"] = ((old_qs + "&" + _ue(extra)).lstrip("&")).encode("utf-8")
+                except Exception:
+                    pass
+            async def _rc():
+                return {"type": "http.request", "body": bf, "more_body": False}
+            req._receive = _rc
 
-        if "getgenres" in pl:
-            rt = _E.Element("subsonic-response", status="ok")
-            _E.SubElement(rt, "genres")
-            return _fmt(rt, js, cb)
+        _load_addon_opts()
+        qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+        qd = dict(qi)
+        fv = qd.get("f", "").lower()
+        js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
+        cb = qd.get("callback") if fv == "jsonp" else None
+        if not _check_auth(qd):
+            return await call_next(req)
 
-        # 3. Scrobble: Chi ghi nhan khi submission != false, va ghi vao DUNG tai khoan `uname`!
-        if "/scrobble" in pl:
-            s_ids = [str(v).strip() for k, v in qi if k == "id" and str(v).strip()]
-            subm = str(qd.get("submission") or "true").lower() != "false"
-            if subm:
-                for sid in s_ids:
-                    if sid.startswith("hdd"):
-                        _DL_POOL.submit(_record_u_hdd, uname, sid)
-                    else:
-                        _DL_POOL.submit(_record_u_yt, uname, sid)
-            rt = _E.Element("subsonic-response", status="ok")
-            return _fmt(rt, js, cb)
+        uname = _clean_u(qd.get("u"))
+        cl_app = str(qd.get("c") or req.headers.get("user-agent") or "").lower()
+        is_symf = "symfonium" in cl_app
+        lp = _A.get_running_loop()
 
-        # 4. getAlbumList / getAlbumList2: Cach ly tuyet doi 100% Recently Played & Most Played theo tung User + Phan trang chuan cho Symfonium!
-        if "getalbumlist" in pl:
-            ltype = str(qd.get("type") or "newest").strip()
-            sz = int(qd.get("size") or 50) if str(qd.get("size", "")).isdigit() else 50
-            off = int(qd.get("offset") or 0) if str(qd.get("offset", "")).isdigit() else 0
-            tg = "albumList2" if "2" in pl else "albumList"
-            rt = await lp.run_in_executor(_REQ_POOL, _build_isolated_album_list, uname, ltype, sz, off, tg)
-            return _fmt(rt, js, cb)
+        tok = _CUR_USER_CTX.set(uname)
+        try:
+            # 1. Ghi nhan Scrobble cho DUNG USER
+            if "/scrobble" in pl:
+                s_ids = [str(v).strip() for k, v in qi if k == "id" and str(v).strip()]
+                subm = str(qd.get("submission") or "true").lower() != "false"
+                if subm:
+                    for sid in s_ids:
+                        if sid.startswith("hdd"):
+                            _DL_POOL.submit(_record_u_hdd_direct, uname, sid)
+                        else:
+                            _DL_POOL.submit(_record_u_yt_direct, uname, sid)
+                return _fmt(_E.Element("subsonic-response", status="ok"), js, cb)
 
-        # 5. Ho tro Symfonium Sync: getArtists, getIndexes & getAlbum (Khong sinh 28 bai Endless khi Symfonium dang Sync thu vien!)
-        if ("getartists" in pl or "getindexes" in pl) and is_symfonium:
-            is_v2 = "getartists" in pl
-            rt = await lp.run_in_executor(_REQ_POOL, _build_symfonium_artists_xml, uname, is_v2)
-            return _fmt(rt, js, cb)
+            # 2. Cach ly 100% Recently Played & Most Played + Phan trang chuan cho Symfonium
+            if "getalbumlist" in pl:
+                ltype = str(qd.get("type") or "newest").strip()
+                sz = int(qd.get("size") or 50) if str(qd.get("size", "")).isdigit() else 50
+                off = int(qd.get("offset") or 0) if str(qd.get("offset", "")).isdigit() else 0
+                tg = "albumList2" if "2" in pl else "albumList"
+                rt = await lp.run_in_executor(_REQ_POOL, _build_strict_u_album_list, uname, ltype, sz, off, tg)
+                return _fmt(rt, js, cb)
 
-        if "/getalbum" in pl and "getalbumlist" not in pl and is_symfonium:
-            al_id = str(qd.get("id") or "").strip()
-            if al_id and not al_id.startswith("hdd"):
-                rt = await lp.run_in_executor(_REQ_POOL, _build_symfonium_single_album_xml, uname, al_id)
-                if rt is not None:
-                    return _fmt(rt, js, cb)
+            # 3. Cac ham ho tro Symfonium Sync
+            if "getopensubsonicextensions" in pl:
+                rt = _E.Element("subsonic-response", status="ok")
+                _E.SubElement(rt, "openSubsonicExtensions")
+                return _fmt(rt, js, cb)
 
+            if "getmusicfolders" in pl:
+                rt = _E.Element("subsonic-response", status="ok")
+                mf = _E.SubElement(rt, "musicFolders")
+                _E.SubElement(mf, "musicFolder", id="1", name="Mirasonic")
+                return _fmt(rt, js, cb)
+
+            if ("getartists" in pl or "getindexes" in pl) and is_symf:
+                rt = await lp.run_in_executor(_REQ_POOL, _build_symfonium_artists_safe, uname, "getartists" in pl)
+                return _fmt(rt, js, cb)
+
+            return await call_next(req)
+        finally:
+            _CUR_USER_CTX.reset(tok)
+    except Exception:
         return await call_next(req)
-    finally:
-        _CUR_USER_CTX.reset(tok)
-
-# Lam sach lich su bi lan truoc do: Xoa cac bai hat khong thuoc ve ban than hoac bi trung trong _USER_PROFILES
-try:
-    for _uk, _up in list(_USER_PROFILES.items()):
-        if isinstance(_up, dict) and "playlists" in _up:
-            # Dam bao moi playlist chi thuoc ve owner=_uk
-            for _pk, _pv in list((_up.get("playlists") or {}).items()):
-                if isinstance(_pv, dict) and _pv.get("owner") and _clean_u_name(_pv.get("owner")) != _clean_u_name(_uk):
-                    _up["playlists"].pop(_pk, None)
-    _save_user_profiles()
-except Exception:
-    pass
 
 _SCACHE.clear()
