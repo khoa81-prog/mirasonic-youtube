@@ -5771,18 +5771,99 @@ _VN_UNACCENTED_KW = _RE.compile(
     r"manh\s*dinh|che\s*linh|tuan\s*vu|khanh\s*ly|le\s*quyen|bang\s*kieu|nhu\s*quynh|"
     r"dan\s*nguyen|quang\s*le|ngoc\s*son|duy\s*khanh|thanh\s*tuyen|giao\s*linh|huong\s*lan|"
     r"hoang\s*dung|my\s*tam|dam\s*vinh\s*hung|hong\s*nhung|my\s*linh|thanh\s*lam|"
-    r"trinh\s*cong\s*son|vu\s*thanh\s*an|ngo\s*thuy\s*mien|lam\s*phuong|ih|chuyen\s*gian)\b",
+    r"trinh\s*cong\s*son|vu\s*thanh\s*an|ngo\s*thuy\s*mien|lam\s*phuong|chuyen\s*gian)\b",
+    _RE.I
+)
+
+# 1. Nhan dien Nhac Hoa Tau / Khong Loi / Giao Huong / New Age (De KHONG BAO GIO chen vao khi dang nghe Rock/Pop/Bolero co loi!)
+_INSTRUMENTAL_KW = _RE.compile(
+    r"\b(orchestra|symphony|philharmonic|instrumental|relaxing\s*instrumental|classic\s*dream|"
+    r"paul\s*mauriat|richard\s*clayderman|kenny\s*g|yanni|secret\s*garden|bandari|vangelis|"
+    r"kitaro|james\s*last|mantovani|francis\s*goya|fausto\s*papetti|acker\s*bilk|shadows|"
+    r"rondò\s*veneziano|rondo\s*veneziano|andre\s*rieu|andré\s*rieu|yo-yo\s*ma|enya|"
+    r"hoa\s*tau|hòa\s*tấu|khong\s*loi|không\s*lời| độc\s*tấu|doc\s*tau|giao\s*huong|giao\s*hưởng|"
+    r"piano\s*solo|guitar\s*solo|saxophone\s*solo|violin\s*solo|sáo\s*trúc|đàn\s*bầu|đàn\s*tranh)\b",
+    _RE.I
+)
+
+# 2. Phan nhom Mood & The loai Nhac Quoc Te tren HDD
+_ROCK_BALLAD_KW = _RE.compile(
+    r"\b(rock|metal|hard\s*rock|classic\s*rock|punk|grunge|alternative|"
+    r"scorpions|guns\s*n|metallica|bon\s*jovi|queen|eagles|deep\s*purple|pink\s*floyd|"
+    r"led\s*zeppelin|ac/dc|aerosmith|dire\s*straits|def\s*leppard|whitesnake|europe|"
+    r"skid\s*row|nirvana|linkin\s*park|green\s*day|u2|cranberries|bryan\s*adams|"
+    r"rod\s*stewart|phil\s*collins|eric\s*clapton|gary\s*moore|santana|journey|"
+    r"foreigner|toto|re\.o\.|styx|boston|kansas|chicago|police|sting|genesis|"
+    r"michael\s*learns\s*to\s*rock|mltr|steelheart|firehouse|warrant|poison|cinderella)\b",
+    _RE.I
+)
+
+_DISCO_DANCE_KW = _RE.compile(
+    r"\b(disco|euro\s*disco|italo\s*disco|eurodance|dance|synthpop|80s\s*pop|remix|club|"
+    r"modern\s*talking|c\.c\.\s*catch|cc\s*catch|sandra|boney\s*m|abba|bad\s*boys\s*blue|"
+    r"joy|fancy|silent\s*circle|alphaville|pet\s*shop\s*boys|depeche\s*mode|erasure|"
+    r"a-ha|aha|rick\s*astley|kylie\s*minogue|madonna|michael\s*jackson|bee\s*gees|"
+    r"village\s*people|donna\s*summer|gloria\s*gaynor|laura\s*branigan|irene\s*cara|"
+    r"baltimora|gazebo|savage|ken\s*laszlo|radiorama|scotch|valerie\s*dore| Sabrina|"
+    r"ace\s*of\s*base|haddaway|la\s*bouche|corona|snap|2\s*unlimited|aqua|vengaboys|"
+    r"britney\s*spears|backstreet\s*boys|nsync|westlife|boyzone|take\s*that|spice\s*girls)\b",
+    _RE.I
+)
+
+# 3. Phan nhom Mood & The loai Nhac Viet tren HDD
+_VN_REMIX_DANCE_KW = _RE.compile(
+    r"\b(remix|vinahouse|nonstop|dj|club|edm|dance|lofi\s*chill|anh\s*yêu\s*vội\s*thế)\b",
+    _RE.I
+)
+
+_VN_TRINH_PRE75_KW = _RE.compile(
+    r"\b(khánh\s*ly|khanh\s*ly|trịnh\s*công\s*sơn|trinh\s*cong\s*son|tuấn\s*ngọc|tuan\s*ngoc|"
+    r"lệ\s*thu|le\s*thu|sĩ\s*phú|si\s*phu|thái\s*thanh|thai\s*thanh|hồng\s*nhung|hong\s*nhung|"
+    r"bằng\s*kiều|bang\s*kieu|quang\s*dũng|quang\s*dung|trần\s*thu\s*hà|ngọc\s*lan|ngoc\s*lan)\b",
     _RE.I
 )
 
 def _is_hdd_vietnamese_song(d):
-    # Kiem tra dau tieng Viet trong Title, Artist, Album, Genre va duong dan thu muc Path tren HDD
     t_str = f"{d.get('title','')} {d.get('artist','')} {d.get('album','')} {d.get('genre','')} {d.get('path','')}"
     if _has_vietnamese(t_str):
         return True
     if _VN_UNACCENTED_KW.search(t_str):
         return True
     return False
+
+def _is_hdd_instrumental(d):
+    t_str = f"{d.get('title','')} {d.get('artist','')} {d.get('album','')} {d.get('genre','')} {d.get('path','')}"
+    return bool(_INSTRUMENTAL_KW.search(t_str))
+
+def _get_hdd_mood_cluster(d, is_vn):
+    if _is_hdd_instrumental(d):
+        return "instrumental"
+    t_str = f"{d.get('title','')} {d.get('artist','')} {d.get('album','')} {d.get('genre','')} {d.get('path','')}"
+    if is_vn:
+        if _VN_REMIX_DANCE_KW.search(t_str):
+            return "vn_remix"
+        if _VN_TRINH_PRE75_KW.search(t_str):
+            return "vn_trinh_lyric"
+        return "vn_bolero_gold"
+    else:
+        if _ROCK_BALLAD_KW.search(t_str):
+            return "en_rock"
+        if _DISCO_DANCE_KW.search(t_str):
+            return "en_disco_pop"
+        return "en_pop_ballad"
+
+def _get_hdd_folder_dir(d):
+    p = str(d.get("path") or "").strip()
+    if "/" in p:
+        return p.rsplit("/", 1)[0].lower()
+    return ""
+
+def _get_hdd_orig_album_key(d):
+    raw_sid = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(d.get("id") or ""))
+    al_id = _ART_MAP.get(raw_sid) or _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(d.get("albumId") or d.get("parent") or ""))
+    if al_id and al_id != raw_sid:
+        return str(al_id).lower()
+    return _get_hdd_folder_dir(d)
 
 def _build_endless_hdd_mix(req_id):
     raw_id = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-|trk_)+", "", str(req_id or "").strip())
@@ -5791,11 +5872,11 @@ def _build_endless_hdd_mix(req_id):
     album_tracks = []
     seed_song = None
 
-    # A. Neu req_id la ma Bai hat HDD (do _patched_fmt_k16 gan albumId = hdd_al_<song_id>) -> Tim bai hat do lam bai so 1!
+    # A. Tim bai hat HDD duoc bam vao lam bai hat hat giong so 1 (Seed Track)
     for hs in all_hdd:
         hs_raw = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(hs.get("id") or ""))
         if hs_raw == raw_id:
-            seed_song = _norm_hdd_song_node(hs)
+            seed_song = dict(hs)
             break
 
     # B. Neu khong phai ma bai hat don le -> Thu lay Album that tu Navidrome HDD
@@ -5805,63 +5886,110 @@ def _build_endless_hdd_mix(req_id):
             with _U.urlopen(_U.Request(f"{_HDD}/rest/getAlbum.view?{_ue(hq)}", headers={"User-Agent": "Resonus"}), timeout=2.5, context=_CTX) as r:
                 hrt = _E.fromstring(r.read())
                 if hrt.attrib.get("status") == "ok":
+                    raw_alb_songs = []
                     for x in hrt.iter():
                         if x.tag in ("song", "child", "entry") and x.attrib.get("isDir") != "true" and x.attrib.get("id"):
-                            album_tracks.append(_norm_hdd_song_node(x.attrib))
+                            raw_alb_songs.append(dict(x.attrib))
+                    if raw_alb_songs:
+                        # Xao tron nhe hoac giu bai dau cua Album va dua vao danh sach
+                        seed_song = raw_alb_songs[0]
+                        for ras in raw_alb_songs:
+                            album_tracks.append(_norm_hdd_song_node(ras))
         except Exception:
             pass
 
     if not album_tracks and not seed_song and raw_id:
         d_single = _fetch_single_hdd_meta(raw_id)
         if d_single and d_single.get("id"):
-            seed_song = _norm_hdd_song_node(d_single)
+            seed_song = dict(d_single)
 
     if seed_song and not album_tracks:
-        album_tracks = [seed_song]
+        album_tracks = [_norm_hdd_song_node(seed_song)]
 
     if not album_tracks and all_hdd:
         picked = list(all_hdd)
         _RND.shuffle(picked)
-        album_tracks = [_norm_hdd_song_node(picked[0])]
+        seed_song = dict(picked[0])
+        album_tracks = [_norm_hdd_song_node(seed_song)]
 
     if not album_tracks:
         return None
 
+    ref_s = seed_song if seed_song else album_tracks[0]
     first_s = album_tracks[0]
-    first_art = str(first_s.get("artist") or "").strip().lower()
-    first_alb = _RE.sub(r"^\[HDD\]\s*", "", str(first_s.get("album") or "")).strip().lower()
-    seed_is_vn = _is_hdd_vietnamese_song(first_s)
+    first_art = str(ref_s.get("artist") or "").strip().lower()
+    first_folder = _get_hdd_folder_dir(ref_s)
+    first_orig_alb = _get_hdd_orig_album_key(ref_s)
+    seed_is_vn = _is_hdd_vietnamese_song(ref_s)
+    seed_is_inst = _is_hdd_instrumental(ref_s)
+    seed_mood = _get_hdd_mood_cluster(ref_s, seed_is_vn)
 
     seen_sids = {_RE.sub(r"^(hdd\d*_|hdd_)+", "", str(x.get("id") or "")) for x in album_tracks}
 
-    # C. KHOA NGON NGU TUYET DOI 100% TREN HDD:
-    # - Neu bai goc la NHAC VIET -> Chi lay cac bai NHAC VIET trong HDD!
-    # - Neu bai goc la NHAC ANH/QUOC TE -> Chi lay cac bai NHAC ANH/QUOC TE trong HDD!
-    same_artist_pool = []
-    same_lang_pool = []
+    # C. PHAN TANG THONG MINH (SMART DJ TIERING):
+    # - Tier 1: Cung Ca si / Ban nhac (vd: Scorpions) -> Giu dung chat giong & phong cach!
+    # - Tier 2: Cung Album goc / Cung Thu muc tren o cung HDD (vd: chung thu muc Rock Ballads) & KHONG PHAI HOA TAU!
+    # - Tier 3: Cung The loai Mood (vd: Rock di voi Rock, Disco di voi Disco, Bolero di voi Bolero)!
+    # - Tier 4: Cung Ngon ngu & Cung loai Vocal (Co loi di voi Co loi, Tuyet doi CAM Hoa tau / Giao huong lot vao!)
+    tier1_same_artist = []
+    tier2_same_folder_or_album = []
+    tier3_same_mood = []
+    tier4_same_vocal_lang = []
 
     for hs in all_hdd:
         hs_raw = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(hs.get("id") or ""))
         if not hs_raw or hs_raw in seen_sids:
             continue
+
+        # 1. Khoa Ngon Ngu 100% (Anh vs Viet)
         hs_is_vn = _is_hdd_vietnamese_song(hs)
-        # Chan 100% viec tron Viet vao Anh hoac tron Anh vao Viet!
         if hs_is_vn != seed_is_vn:
             continue
 
+        # 2. Khoa Hoa Tau / Khong Loi 100%:
+        # Neu dang nghe nhac CO LOI (Rock/Pop/Bolero) -> CAM TUYET DOI nhac Hoa tau / Orchestra / Enya / Paul Mauriat / Clayderman!
+        # Neu dang nghe nhac HOA TAU -> Chi phat nhac Hoa tau!
+        hs_is_inst = _is_hdd_instrumental(hs)
+        if hs_is_inst != seed_is_inst:
+            continue
+
         hs_art = str(hs.get("artist") or "").strip().lower()
-        if first_art and hs_art == first_art:
-            same_artist_pool.append(hs)
+        hs_folder = _get_hdd_folder_dir(hs)
+        hs_orig_alb = _get_hdd_orig_album_key(hs)
+        hs_mood = _get_hdd_mood_cluster(hs, hs_is_vn)
+
+        if first_art and first_art not in ("unknown", "various artists", "va", "hdd artist") and hs_art == first_art:
+            tier1_same_artist.append(hs)
+        elif (first_orig_alb and hs_orig_alb == first_orig_alb) or (first_folder and hs_folder == first_folder):
+            tier2_same_folder_or_album.append(hs)
+        elif hs_mood == seed_mood:
+            tier3_same_mood.append(hs)
         else:
-            same_lang_pool.append(hs)
+            tier4_same_vocal_lang.append(hs)
 
-    _RND.shuffle(same_artist_pool)
-    _RND.shuffle(same_lang_pool)
+    # Xao tron ngau nhien tung tang de moi lan bam o Home luon co danh sach moi me!
+    _RND.shuffle(tier1_same_artist)
+    _RND.shuffle(tier2_same_folder_or_album)
+    _RND.shuffle(tier3_same_mood)
+    _RND.shuffle(tier4_same_vocal_lang)
 
-    # Moi lan bam vao bai hat HDD o Home: Lay 3-5 bai cung ca si + 20 bai cung ngon ngu da xao tron ngau nhien!
     extra_needed = max(0, 25 - len(album_tracks))
-    chosen_extra = (same_artist_pool[:5] + same_lang_pool)[:extra_needed]
-    _RND.shuffle(chosen_extra)
+
+    # Xay dung luong phat muot ma nhu DJ:
+    # - 10 bai dau tien: Tron giua Cung Ca Si (Tier 1) + Cung Album/Thu muc Rock (Tier 2) + Cung Mood (Tier 3)
+    # - Cac bai tiep theo: Mo rong ra Cung Mood (Tier 3) va Cung Vocal (Tier 4, chi khi Tier 1+2+3 chua du 24 bai)
+    core_mood_pool = tier1_same_artist[:10] + tier2_same_folder_or_album[:10] + tier3_same_mood[:16]
+    # Sap xep xen ke thong minh: 2-3 bai dau ngay sau bai hat giong LUON la Cung Ca Si hoac Cung Album/Mood!
+    lead_tracks = (tier1_same_artist[:3] + tier2_same_folder_or_album[:3] + tier3_same_mood[:3])[:4]
+    lead_ids = {_RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(x.get("id") or "")) for x in lead_tracks}
+    _RND.shuffle(lead_tracks)
+
+    rem_mood_pool = [x for x in (tier1_same_artist + tier2_same_folder_or_album + tier3_same_mood) if _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(x.get("id") or "")) not in lead_ids]
+    _RND.shuffle(rem_mood_pool)
+
+    chosen_extra = (lead_tracks + rem_mood_pool)[:extra_needed]
+    if len(chosen_extra) < extra_needed:
+        chosen_extra.extend(tier4_same_vocal_lang[:extra_needed - len(chosen_extra)])
 
     for ex in chosen_extra:
         album_tracks.append(_norm_hdd_song_node(ex))
