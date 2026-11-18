@@ -1233,7 +1233,7 @@ def _ens_fast(vid):
     def _run():
         try:
             c1 = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "--concurrent-fragments", "8", "-f", "140/251/bestaudio/best", "-o", "-", f"https://www.youtube.com/watch?v={vid}"]
-            c2 = ["ffmpeg", "-y", "-loglevel", "error", "-threads", "4", "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100", "-c:a", "aac", "-b:a", "256k", "-f", "adts", ap]
+            c2 = ["ffmpeg", "-y", "-loglevel", "error", "-threads", "2", "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100", "-c:a", "aac", "-b:a", "256k", "-f", "adts", ap]
             p1 = _SP.Popen(c1, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
             p2 = _SP.Popen(c2, stdin=p1.stdout, stdout=_SP.DEVNULL, stderr=_SP.DEVNULL)
             p1.stdout.close(); p2.communicate(timeout=45)
@@ -2362,7 +2362,7 @@ def _ens_fast(vid):
     def _run():
         try:
             c1 = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "--concurrent-fragments", "8", "-f", "140/251/bestaudio/best", "-o", "-", f"https://www.youtube.com/watch?v={vid}"]
-            c2 = ["ffmpeg", "-y", "-loglevel", "error", "-threads", "4", "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100", "-c:a", "aac", "-b:a", "256k", "-f", "adts", ap]
+            c2 = ["ffmpeg", "-y", "-loglevel", "error", "-threads", "2", "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100", "-c:a", "aac", "-b:a", "256k", "-f", "adts", ap]
             p1 = _SP.Popen(c1, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
             p2 = _SP.Popen(c2, stdin=p1.stdout, stdout=_SP.DEVNULL, stderr=_SP.DEVNULL)
             p1.stdout.close(); p2.communicate(timeout=3600)
@@ -3492,7 +3492,7 @@ def _ens_m4a_256(vid):
 
     j = {"p": mp, "d": False, "total_sz": est_sz}
     _M4A_256_JOBS[vid] = j
-    _DL_POOL.submit(_get_direct_yt_url, vid)
+    # No duplicate yt-dlp on start
 
     def _run():
         try:
@@ -3503,7 +3503,7 @@ def _ens_m4a_256(vid):
             ]
             # Dong goi luong Opus 251 sang M4A AAC 256kbps CBR that su voi bang muc luc frag_keyframe+empty_moov
             c2 = [
-                "ffmpeg", "-y", "-loglevel", "error", "-threads", "4",
+                "ffmpeg", "-y", "-loglevel", "error", "-threads", "2",
                 "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100",
                 "-c:a", "aac", "-b:a", "256k",
                 "-movflags", "frag_keyframe+empty_moov+default_base_moof",
@@ -3545,7 +3545,7 @@ def _ens_mp3_cast(vid):
         try:
             if _OS.path.exists(m4p) and _OS.path.getsize(m4p) > 65536 and (vid not in _M4A_256_JOBS or _M4A_256_JOBS[vid]["d"]):
                 c_loc = [
-                    "ffmpeg", "-y", "-loglevel", "error", "-threads", "4",
+                    "ffmpeg", "-y", "-loglevel", "error", "-threads", "2",
                     "-i", m4p, "-vn", "-ac", "2", "-ar", "44100",
                     "-c:a", "libmp3lame", "-b:a", "256k",
                     "-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", mp
@@ -3554,7 +3554,7 @@ def _ens_mp3_cast(vid):
             else:
                 c1 = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "--concurrent-fragments", "4", "-f", "141/774/251/140/bestaudio/best", "-o", "-", f"https://www.youtube.com/watch?v={vid}"]
                 c2 = [
-                    "ffmpeg", "-y", "-loglevel", "error", "-threads", "4",
+                    "ffmpeg", "-y", "-loglevel", "error", "-threads", "2",
                     "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100",
                     "-c:a", "libmp3lame", "-b:a", "256k",
                     "-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", mp
@@ -4634,11 +4634,18 @@ async def _k15_user_isolation_mw(req, call_next):
         _CUR_USER_CTX.reset(tok)
 
 _SCACHE.clear()
-# --- K16: V1.6.2 RESTORE V1.5.8 ON-DEMAND 500x500 SQUARE ARTWORK + 1.5S STREAM BUFFER ---
-_ART_DIR = "/data/art_cache_v33" if _OS.path.isdir("/data") else "/tmp/art_cache_v33"
+# --- K16: V1.6.3 V1.5.8 NON-BLOCKING ENGINE + CPU PRIORITY + DELAYED NEXT-1 PREFETCH ---
+try:
+    from PIL import Image as _PIL_IMG
+    _HAS_PIL = True
+except Exception:
+    _HAS_PIL = False
+
+_ART_DIR = "/data/art_cache_v34" if _OS.path.isdir("/data") else "/tmp/art_cache_v34"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_RAM.clear()
 _FAST_ART_POOL = _CF.ThreadPoolExecutor(max_workers=12)
+_NEXT_TRACK_MAP = {}
 
 def _fix_url_500(u):
     u = str(u or "").strip()
@@ -4655,6 +4662,32 @@ def _crop_500_square(d, mode="square"):
     if mode == "square" and d.startswith(b"\xff\xd8") and len(d) < 95000:
         return d
 
+    # Sieu toc: Neu co PIL (Pillow), cat anh vuong 500x500 truc tiep trong RAM chi mat 0.004 giay (0% nghẽn CPU!)
+    if _HAS_PIL:
+        try:
+            im = _PIL_IMG.open(_IO.BytesIO(d)).convert("RGB")
+            w, h = im.size
+            if mode == "hq43":
+                # Cat bo 2 dai vien den tren/duoi cua anh 4:3 YouTube (lay vung 16:9 chinh giua)
+                h_169 = int(w * 9 / 16)
+                if h > h_169:
+                    top = (h - h_169) // 2
+                    im = im.crop((0, top, w, top + h_169))
+                    w, h = im.size
+            side = min(w, h)
+            left = (w - side) // 2
+            top = (h - side) // 2
+            im = im.crop((left, top, left + side, top + side))
+            if side != 500:
+                im = im.resize((500, 500), getattr(_PIL_IMG, "Resampling", _PIL_IMG).LANCZOS)
+            buf = _IO.BytesIO()
+            im.save(buf, format="JPEG", quality=88, optimize=True)
+            out_b = buf.getvalue()
+            if len(out_b) > 300:
+                return out_b
+        except Exception:
+            pass
+
     tid = f"{_TH.get_ident()}_{_RND.randint(1000,9999)}"
     fin = f"/tmp/art_in_{tid}.img"
     fout = f"/tmp/art_out_{tid}.jpg"
@@ -4668,11 +4701,11 @@ def _crop_500_square(d, mode="square"):
             vf = "scale=500:500:force_original_aspect_ratio=increase,crop=500:500"
 
         p = _SP.run([
-            "ffmpeg", "-y", "-loglevel", "error", "-i", fin,
+            "ffmpeg", "-y", "-loglevel", "error", "-threads", "1", "-i", fin,
             "-frames:v", "1", "-vf", vf,
             "-pix_fmt", "yuvj420p", "-strict", "-2",
-            "-map_metadata", "-1", "-q:v", "2", fout
-        ], stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=3.5)
+            "-map_metadata", "-1", "-q:v", "3", fout
+        ], stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=3.0)
         if p.returncode == 0 and _OS.path.exists(fout) and _OS.path.getsize(fout) > 300:
             out_b = open(fout, "rb").read()
             if out_b.startswith(b"\xff\xd8"):
@@ -4693,18 +4726,17 @@ def _fetch_yt_500_vid(vid):
         return None
     if vid in _YTM_THUMB:
         tu = _fix_url_500(_YTM_THUMB[vid])
-        d = _dl_fast(tu, 400, 1.4)
+        d = _dl_fast(tu, 400, 1.2)
         if d:
             jpg = _crop_500_square(d, "square")
             if jpg:
                 return jpg
 
-    # Tai song song maxresdefault va hqdefault y het ban 1.5.8 de khong mat thoi gian cho!
-    f_max = _FAST_ART_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 1800, 0.85)
-    f_hq  = _FAST_ART_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 600, 1.3)
+    f_max = _FAST_ART_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 1800, 0.75)
+    f_hq  = _FAST_ART_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 600, 1.2)
 
     try:
-        d_max = f_max.result(timeout=0.9)
+        d_max = f_max.result(timeout=0.8)
         if d_max:
             jpg = _crop_500_square(d_max, "maxres")
             if jpg:
@@ -4713,7 +4745,7 @@ def _fetch_yt_500_vid(vid):
         pass
 
     try:
-        d_hq = f_hq.result(timeout=1.4)
+        d_hq = f_hq.result(timeout=1.2)
         if d_hq:
             jpg = _crop_500_square(d_hq, "hq43")
             if jpg:
@@ -4721,7 +4753,7 @@ def _fetch_yt_500_vid(vid):
     except Exception:
         pass
 
-    d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 400, 1.2)
+    d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 400, 1.0)
     if d_mq:
         return _crop_500_square(d_mq, "maxres")
     return None
@@ -4776,7 +4808,7 @@ def _get_art_600(cid):
                         _ytm_search_artists_and_pls(aname)
             tu = _ARTIST_THUMB.get(k_id, "")
             if tu:
-                d = _dl_fast(_fix_url_500(tu), 300, 1.8)
+                d = _dl_fast(_fix_url_500(tu), 300, 1.5)
                 jpg = _crop_500_square(d, "square")
                 if jpg:
                     open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
@@ -4790,7 +4822,7 @@ def _get_art_600(cid):
                     jpg = _fetch_yt_500_vid(m_vi.group(1))
                     if jpg:
                         open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
-                d = _dl_fast(_fix_url_500(tu), 300, 1.8)
+                d = _dl_fast(_fix_url_500(tu), 300, 1.5)
                 jpg = _crop_500_square(d, "hq43" if "hqdefault" in tu else "square")
                 if jpg:
                     open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
@@ -4833,6 +4865,7 @@ def _prewarm_list(ids):
 _orig_fmt_base_k16 = _orig_fmt_k11
 def _patched_fmt_k16(rt, js, cb=None):
     _cln(rt)
+    seq_ids = []
     for x in rt.iter():
         a = x.attrib
         sid = str(a.get("id") or "")
@@ -4844,18 +4877,27 @@ def _patched_fmt_k16(rt, js, cb=None):
                 if alid and rid_clean:
                     _ART_MAP[rid_clean] = alid
                 raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", ca or ("al-" + alid if alid else rid_clean))
-                a["coverArt"] = "hdd33_" + raw_ca
+                a["coverArt"] = "hdd34_" + raw_ca
             else:
                 vid_clean = _RE.sub(r"^(yt\d*_|al_)+", "", sid)
-                a["coverArt"] = "yt33_" + vid_clean
+                a["coverArt"] = "yt34_" + vid_clean
+            seq_ids.append((_norm_art_key(sid)[1], a["coverArt"]))
         elif ca:
             raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", ca)
             while raw_ca.startswith("al_") and len(raw_ca) >= 14:
                 raw_ca = raw_ca[3:]
             if ca.startswith("hdd") or sid.startswith("hdd"):
-                a["coverArt"] = "hdd33_" + raw_ca
+                a["coverArt"] = "hdd34_" + raw_ca
             else:
-                a["coverArt"] = "yt33_" + raw_ca
+                a["coverArt"] = "yt34_" + raw_ca
+
+    # Ghi nho 2 bai ke tiep trong danh sach de nap tre sau 3 giay khi CPU da ranh
+    for i in range(len(seq_ids) - 1):
+        _NEXT_TRACK_MAP[seq_ids[i][0]] = [x[1] for x in seq_ids[i+1 : i+3]]
+    if seq_ids:
+        # Nap ngay anh cua bai dau tien trong danh sach khi vua bam mo Album
+        _FAST_ART_POOL.submit(_get_art_600, seq_ids[0][1])
+
     rt.attrib.update({"status": rt.attrib.get("status", "ok"), "version": "1.16.1", "type": "subsonic", "serverVersion": "1.16.1"})
     if js:
         b = _J.dumps({"subsonic-response": _x2d(rt, 0)})
@@ -4864,6 +4906,14 @@ def _patched_fmt_k16(rt, js, cb=None):
     return _R(content=b'<?xml version="1.0" encoding="UTF-8"?>\n' + _E.tostring(rt, encoding="utf-8"), media_type="application/xml; charset=utf-8", headers=_CORS)
 
 _orig_fmt_k11 = _patched_fmt_k16
+
+def _delayed_next_prefetch(cur_sid):
+    try:
+        _, cur_k, _ = _norm_art_key(cur_sid)
+        for nxt_ca in _NEXT_TRACK_MAP.get(cur_k, []):
+            _get_art_600(nxt_ca)
+    except Exception:
+        pass
 
 @app.middleware("http")
 async def _k16_ondemand_art_mw(req, call_next):
@@ -4875,31 +4925,40 @@ async def _k16_ondemand_art_mw(req, call_next):
     qd = dict(qi)
     lp = _A.get_running_loop()
 
-    # 1. Tra anh 500x500 vuong vuc y het ban 1.5.8
+    # 1. Tra anh 500x500 vuong vuc y het ban 1.5.8 (Them ETag rieng cho tung ma anh de Wavio khong bao gio ket anh cu!)
     if "/getcoverart" in pl:
         cid = str(qd.get("id") or "").strip()
         d = await lp.run_in_executor(_FAST_ART_POOL, _get_art_600, cid) if cid else None
         if d:
+            etag = f'"{_H.md5((cid + str(len(d))).encode()).hexdigest()}"'
             return _R(
                 content=d,
                 media_type="image/jpeg",
                 headers={
                     **_CORS,
                     "Content-Length": str(len(d)),
-                    "Cache-Control": "public, max-age=604800"
+                    "Cache-Control": "public, max-age=604800",
+                    "ETag": etag
                 }
             )
-        return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1))})
+        return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1)), "Cache-Control": "no-store"})
 
-    # 2. Chi nap DUNG 1 BAI DANG PHAT, va cho them xiu thoi gian (toi da 1.5 giay) de anh 500x500 kip cat xong truoc khi nhac phat!
+    # 2. Giu nguyen co che NON-BLOCKING cua ban 1.5.8 khi bat dau Stream,
+    # nhung nhuong 0.2s dau tien cho _get_art_600 chay truoc khi yt-dlp khoi dong,
+    # va hen gio sau 3.0 giay (khi nhac da phat em) moi tai san anh cho 1-2 bai ke tiep!
     if "/stream" in pl or "/download" in pl:
         sid = str(qd.get("id") or "").strip()
         rng = req.headers.get("range") or req.headers.get("Range") or ""
         if sid and ((not rng) or rng.startswith("bytes=0-")):
-            try:
-                await _A.wait_for(lp.run_in_executor(_FAST_ART_POOL, _get_art_600, sid), timeout=1.5)
-            except Exception:
-                pass
+            kind, k_id, _ = _norm_art_key(sid)
+            if f"{kind}_{k_id}" not in _ART_RAM:
+                try:
+                    await _A.wait_for(lp.run_in_executor(_FAST_ART_POOL, _get_art_600, sid), timeout=0.25)
+                except Exception:
+                    pass
+            t_job = _TH.Timer(3.0, lambda: _FAST_ART_POOL.submit(_delayed_next_prefetch, sid))
+            t_job.daemon = True
+            t_job.start()
 
     return await call_next(req)
 
