@@ -3368,48 +3368,10 @@ async def _k11_mw_disabled(req, call_next):
 
 _SCACHE.clear()
 
-# --- K12: V1.6.7 DUAL-ENGINE SMART ROUTER (SIDX M4A FOR AURORA/WAVIO + AUTO MP3 FOR EDIFIER CAST) ---
-import struct as _ST
-
-_M4A_JOBS = {}
+# --- K12: V1.7.0 TRUE 256KBPS M4A (V1.6.5 ENGINE) + STRICT USER PLAY TRACKING + AUTO MP3 CAST ---
+_M4A_256_JOBS = {}
 _MP3_JOBS = {}
 _YT_DIRECT_URL = {}
-
-def _parse_sidx_exact_size(head_b):
-    pos = 0
-    n = len(head_b)
-    while pos + 8 <= n:
-        try:
-            box_sz, box_type = _ST.unpack(">I4s", head_b[pos:pos+8])
-        except Exception:
-            break
-        if box_sz < 8:
-            break
-        if box_type == b"sidx" and pos + box_sz <= n:
-            try:
-                ver = head_b[pos + 8]
-                off = pos + 20
-                if ver == 0:
-                    _, first_off = _ST.unpack(">II", head_b[off:off+8])
-                    off += 8
-                else:
-                    _, first_off = _ST.unpack(">QQ", head_b[off:off+16])
-                    off += 16
-                _, ref_cnt = _ST.unpack(">HH", head_b[off:off+4])
-                off += 4
-                total_ref = 0
-                for _ in range(ref_cnt):
-                    if off + 12 > pos + box_sz:
-                        break
-                    rw, _, _ = _ST.unpack(">III", head_b[off:off+12])
-                    total_ref += (rw & 0x7FFFFFFF)
-                    off += 12
-                if total_ref > 0:
-                    return (pos + box_sz) + first_off + total_ref
-            except Exception:
-                pass
-        pos += box_sz
-    return 0
 
 def _is_cast_or_dlna_client(req, qd):
     fmt_q = str(qd.get("format") or "").strip().lower()
@@ -3432,16 +3394,14 @@ def _is_cast_or_dlna_client(req, qd):
     if any(k in ua for k in cast_kw):
         return True
 
-    # Tat ca cac App tren Dien thoai & Man hinh Xe BYD (bao gom AURORA, WAVIO, YUZIC, SYMFONIUM) -> Dung Native M4A (co hop sidx)!
     app_kw = (
-        "aurora", "symfonium", "yuzic", "wavio", "ultrasonic", "substreamer",
-        "tempo", "amperfy", "play:sub", "dsub", "resonus", "musly", "substars",
+        "symfonium", "yuzic", "wavio", "ultrasonic", "substreamer", "tempo",
+        "amperfy", "play:sub", "dsub", "resonus", "musly", "substars",
         "exoplayer", "media3", "androidx.media", "dalvik", "dart", "okhttp",
         "cfnetwork", "applecoremedia", "mozilla"
     )
     if any(k in ua for k in app_kw):
         return False
-
     return True
 
 for _vid_k, _s_obj in list(_YL.items()):
@@ -3449,14 +3409,11 @@ for _vid_k, _s_obj in list(_YL.items()):
         _s_obj["suffix"] = "m4a"
         _s_obj["contentType"] = "audio/mp4"
         _s_obj["bitRate"] = "256"
-        _s_obj["samplingRate"] = "44100"
-        _s_obj["bitDepth"] = "16"
-        _s_obj["channelCount"] = "2"
         _s_obj.pop("transcodedSuffix", None)
         _s_obj.pop("transcodedContentType", None)
         _d_s = int(_s_obj.get("duration") or 240) if str(_s_obj.get("duration","")).isdigit() else 240
-        _m4p = _OS.path.join(_AUD_DIR, f"{_vid_k}.m4a")
-        _s_obj["size"] = str(_OS.path.getsize(_m4p)) if (_OS.path.exists(_m4p) and _OS.path.getsize(_m4p) > 32768) else str(_d_s * 16000)
+        _m4p = _OS.path.join(_AUD_DIR, f"{_vid_k}_256.m4a")
+        _s_obj["size"] = str(_OS.path.getsize(_m4p)) if (_OS.path.exists(_m4p) and _OS.path.getsize(_m4p) > 65536) else str(_d_s * 32000)
         if "path" in _s_obj:
             _s_obj["path"] = _RE.sub(r"\.(aac|mp3|m4a)$", ".m4a", str(_s_obj["path"]))
 try:
@@ -3469,14 +3426,11 @@ def _make_song(vid, tit, art, alb="", dur="240", is_vid=False, thumb_url=""):
     s = _orig_make_song_k11(vid, tit, art, alb, dur, is_vid, thumb_url)
     if s:
         d_int = int(s.get("duration") or 240) if str(s.get("duration","")).isdigit() else 240
-        mp = _OS.path.join(_AUD_DIR, f"{vid}.m4a")
-        f_sz = str(_OS.path.getsize(mp)) if (_OS.path.exists(mp) and _OS.path.getsize(mp) > 32768) else str(d_int * 16000)
+        mp = _OS.path.join(_AUD_DIR, f"{vid}_256.m4a")
+        f_sz = str(_OS.path.getsize(mp)) if (_OS.path.exists(mp) and _OS.path.getsize(mp) > 65536) else str(d_int * 32000)
         s["suffix"] = "m4a"
         s["contentType"] = "audio/mp4"
         s["bitRate"] = "256"
-        s["samplingRate"] = "44100"
-        s["bitDepth"] = "16"
-        s["channelCount"] = "2"
         s.pop("transcodedSuffix", None)
         s.pop("transcodedContentType", None)
         s["size"] = f_sz
@@ -3492,83 +3446,69 @@ def _fmt(rt, js, cb=None):
             a["suffix"] = "m4a"
             a["contentType"] = "audio/mp4"
             a["bitRate"] = "256"
-            a["samplingRate"] = "44100"
-            a["bitDepth"] = "16"
-            a["channelCount"] = "2"
             a.pop("transcodedSuffix", None)
             a.pop("transcodedContentType", None)
             d_v = int(a.get("duration") or 240) if str(a.get("duration", "")).isdigit() else 240
             vid_c = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", str(a.get("id") or ""))
-            mp = _OS.path.join(_AUD_DIR, f"{vid_c}.m4a")
-            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 32768:
+            mp = _OS.path.join(_AUD_DIR, f"{vid_c}_256.m4a")
+            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536:
                 a["size"] = str(_OS.path.getsize(mp))
             else:
-                a["size"] = str(max(d_v * 16000, 65536))
+                a["size"] = str(max(d_v * 32000, 128000))
             if "path" in a:
                 a["path"] = _RE.sub(r"\.(aac|mp3|m4a)$", ".m4a", str(a["path"]))
     return _orig_fmt_k11(rt, js, cb)
 
-def _get_direct_yt_url(vid, prefer_m4a=True):
+def _get_direct_yt_url(vid):
     now = _TM.time()
-    ck = f"{vid}_{'m4a' if prefer_m4a else 'any'}"
-    if ck in _YT_DIRECT_URL and _YT_DIRECT_URL[ck][1] > now:
-        return _YT_DIRECT_URL[ck][0]
-    fmt_sel = "140/bestaudio[ext=m4a]/bestaudio" if prefer_m4a else "141/774/251/140/bestaudio/best"
+    if vid in _YT_DIRECT_URL and _YT_DIRECT_URL[vid][1] > now:
+        return _YT_DIRECT_URL[vid][0]
     try:
-        c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "-f", fmt_sel, "-g", f"https://www.youtube.com/watch?v={vid}"]
+        c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "-f", "141/774/251/140/bestaudio/best", "-g", f"https://www.youtube.com/watch?v={vid}"]
         u = _SP.check_output(c, timeout=6).decode("utf-8", "ignore").strip().splitlines()[0]
         if u.startswith("http"):
-            _YT_DIRECT_URL[ck] = (u, now + 10800)
+            _YT_DIRECT_URL[vid] = (u, now + 10800)
             return u
     except Exception:
         pass
     return ""
 
-# --- ENGINE 1: NATIVE M4A CO HOP SIDX (TUA SEEK BAR MUOT 100% TREN AURORA & WAVIO) ---
-def _ens_m4a(vid):
-    mp = _OS.path.join(_AUD_DIR, f"{vid}.m4a")
+def _ens_m4a_256(vid):
+    mp = _OS.path.join(_AUD_DIR, f"{vid}_256.m4a")
     dur_v = int((_YL.get(vid) or {}).get("duration") or 240) if str((_YL.get(vid) or {}).get("duration","")).isdigit() else 240
-    est_sz = max(dur_v * 16000, 65536)
+    est_sz = max(dur_v * 32000, 128000)
 
-    if _OS.path.exists(mp) and _OS.path.getsize(mp) > 32768 and (vid not in _M4A_JOBS or _M4A_JOBS[vid]["d"]):
+    if _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536 and (vid not in _M4A_256_JOBS or _M4A_256_JOBS[vid]["d"]):
         real_sz = _OS.path.getsize(mp)
         if vid in _YL:
             _YL[vid]["size"] = str(real_sz)
-        return {"p": mp, "d": True, "total_sz": real_sz, "sidx_parsed": True}
+        return {"p": mp, "d": True, "total_sz": real_sz}
 
-    if vid in _M4A_JOBS and not _M4A_JOBS[vid]["d"]:
-        return _M4A_JOBS[vid]
+    if vid in _M4A_256_JOBS and not _M4A_256_JOBS[vid]["d"]:
+        return _M4A_256_JOBS[vid]
 
-    j = {"p": mp, "d": False, "total_sz": est_sz, "sidx_parsed": False}
-    _M4A_JOBS[vid] = j
+    j = {"p": mp, "d": False, "total_sz": est_sz}
+    _M4A_256_JOBS[vid] = j
 
     def _run():
         try:
             c1 = [
                 "yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate",
-                "--concurrent-fragments", "4", "-f", "140/bestaudio[ext=m4a]",
-                "--fixup", "never", "-o", "-", f"https://www.youtube.com/watch?v={vid}"
+                "--concurrent-fragments", "4", "-f", "141/774/251/140/bestaudio/best",
+                "-o", "-", f"https://www.youtube.com/watch?v={vid}"
+            ]
+            c2 = [
+                "ffmpeg", "-y", "-loglevel", "error", "-threads", "2",
+                "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100",
+                "-c:a", "aac", "-b:a", "256k",
+                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                "-frag_duration", "1000000", "-f", "ipod", mp
             ]
             p1 = _SP.Popen(c1, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
-            head_buf = bytearray()
-            with open(mp, "wb") as f_out:
-                while True:
-                    chunk = p1.stdout.read(65536)
-                    if not chunk:
-                        break
-                    f_out.write(chunk)
-                    f_out.flush()
-                    if not j["sidx_parsed"] and len(head_buf) < 32768:
-                        head_buf.extend(chunk[:32768 - len(head_buf)])
-                        if len(head_buf) >= 4096:
-                            exact_s = _parse_sidx_exact_size(bytes(head_buf))
-                            if exact_s > 32768:
-                                j["total_sz"] = exact_s
-                                j["sidx_parsed"] = True
-                                if vid in _YL:
-                                    _YL[vid]["size"] = str(exact_s)
-            p1.wait(timeout=3600)
-            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 32768:
+            p2 = _SP.Popen(c2, stdin=p1.stdout, stdout=_SP.DEVNULL, stderr=_SP.DEVNULL)
+            p1.stdout.close()
+            p2.communicate(timeout=3600)
+            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536:
                 j["total_sz"] = _OS.path.getsize(mp)
                 if vid in _YL:
                     _YL[vid]["size"] = str(j["total_sz"])
@@ -3580,10 +3520,9 @@ def _ens_m4a(vid):
     _TH.Thread(target=_run, daemon=True).start()
     return j
 
-# --- ENGINE 2: MP3 CBR 256KBPS TU DONG KHI CAST RA LOA EDIFIER MS50A / TV DLNA ---
 def _ens_mp3_cast(vid):
     mp = _OS.path.join(_AUD_DIR, f"{vid}.mp3")
-    m4p = _OS.path.join(_AUD_DIR, f"{vid}.m4a")
+    m4p = _OS.path.join(_AUD_DIR, f"{vid}_256.m4a")
     dur_v = int((_YL.get(vid) or {}).get("duration") or 240) if str((_YL.get(vid) or {}).get("duration","")).isdigit() else 240
     est_sz = max(dur_v * 32000, 128000)
 
@@ -3598,7 +3537,7 @@ def _ens_mp3_cast(vid):
 
     def _run():
         try:
-            if _OS.path.exists(m4p) and _OS.path.getsize(m4p) > 65536 and (vid not in _M4A_JOBS or _M4A_JOBS[vid]["d"]):
+            if _OS.path.exists(m4p) and _OS.path.getsize(m4p) > 65536 and (vid not in _M4A_256_JOBS or _M4A_256_JOBS[vid]["d"]):
                 c_loc = [
                     "ffmpeg", "-y", "-loglevel", "error", "-threads", "2",
                     "-i", m4p, "-vn", "-ac", "2", "-ar", "44100",
@@ -3638,7 +3577,18 @@ async def _k12_seek_mw(req, call_next):
     qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
     qd = dict(qi)
     sid = str(qd.get("id") or "").strip()
-    if not sid or sid.startswith("hdd"):
+    uname_stream = str(qd.get("u") or "admin").strip().lower() or "admin"
+
+    if not sid:
+        return await call_next(req)
+
+    # Ghi nhan lich su nghe cho DUNG USER dang goi /stream (Kể cả HDD lẫn YouTube, chỉ ghi ở byte đầu tiên!)
+    rng = req.headers.get("range") or req.headers.get("Range") or ""
+    is_first_chunk = (not rng) or rng.startswith("bytes=0-")
+
+    if sid.startswith("hdd"):
+        if is_first_chunk and "_record_u_hdd" in globals():
+            _DL_POOL.submit(_record_u_hdd, uname_stream, sid)
         return await call_next(req)
 
     clean_id = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", sid)
@@ -3648,7 +3598,8 @@ async def _k12_seek_mw(req, call_next):
 
     vid = m.group(1)
     lp = _A.get_running_loop()
-    _record_yt_play(vid, False)
+    if is_first_chunk and "_record_u_yt" in globals():
+        _DL_POOL.submit(_record_u_yt, uname_stream, vid)
 
     t_off = 0
     for tk in ("timeOffset", "timeoffset", "offset"):
@@ -3656,7 +3607,6 @@ async def _k12_seek_mw(req, call_next):
             t_off = int(qd[tk])
             break
 
-    rng = req.headers.get("range") or req.headers.get("Range") or ""
     st_b = 0
     end_b = None
     has_range = False
@@ -3670,131 +3620,32 @@ async def _k12_seek_mw(req, call_next):
         except Exception:
             st_b = 0
 
+    if t_off > 0 and st_b == 0:
+        st_b = t_off * 32000
+        has_range = True
+
     is_cast = _is_cast_or_dlna_client(req, qd)
+    j = _ens_mp3_cast(vid) if is_cast else _ens_m4a_256(vid)
+    m_type = "audio/mpeg" if is_cast else "audio/mp4"
+    f_codec = "libmp3lame" if is_cast else "aac"
 
-    # NHANH A: CAST / DLNA (LOA EDIFIER MS50A / TV) HOAC KHI CO TIMEOFFSET -> MP3 256K CBR
-    if is_cast or t_off > 0:
-        if t_off > 0 and st_b == 0:
-            st_b = t_off * 32000
-            has_range = True
-
-        j = _ens_mp3_cast(vid)
-        for _ in range(55):
-            if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 65536) or j["d"]:
-                break
-            await _A.sleep(0.06)
-
-        cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
-        if st_b > 0 and not j["d"] and cur_sz < st_b + 65536:
-            for _ in range(15):
-                cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
-                if cur_sz >= st_b + 65536 or j["d"]:
-                    break
-                await _A.sleep(0.06)
-
-        cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
-        total_sz = cur_sz if (j["d"] and cur_sz > 65536) else max(j.get("total_sz", 7680000), cur_sz + 65536)
-        if st_b >= total_sz:
-            st_b = max(0, total_sz - 65536)
-        real_end = min(end_b, total_sz - 1) if (end_b is not None and end_b < total_sz) else (total_sz - 1)
-        content_len = max(0, real_end - st_b + 1)
-
-        hdrs = {
-            **_CORS,
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(content_len),
-            "Cache-Control": "no-cache",
-            "transferMode.dlna.org": "Streaming",
-            "contentFeatures.dlna.org": "DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
-        }
-        if has_range:
-            hdrs["Content-Range"] = f"bytes {st_b}-{real_end}/{total_sz}"
-        st_code = 206 if has_range else 200
-
-        if req.method == "HEAD":
-            return _R(content=b"", status_code=st_code, media_type="audio/mpeg", headers=hdrs)
-
-        if st_b > 0 and not j["d"] and cur_sz < st_b + 32768:
-            seek_sec = t_off if t_off > 0 else (st_b / 32000.0)
-            async def _ffmpeg_seek_stream(sec, max_bytes):
-                sent = 0
-                u_out = await lp.run_in_executor(_DL_POOL, _get_direct_yt_url, vid, False)
-                if u_out:
-                    c2 = [
-                        "ffmpeg", "-loglevel", "error", "-ss", f"{sec:.2f}",
-                        "-i", u_out, "-vn", "-ac", "2", "-ar", "44100",
-                        "-c:a", "libmp3lame", "-b:a", "256k",
-                        "-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", "pipe:1"
-                    ]
-                    p2 = _SP.Popen(c2, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
-                    try:
-                        while sent < max_bytes:
-                            to_r = min(32768, max_bytes - sent)
-                            chunk = await lp.run_in_executor(_REQ_POOL, p2.stdout.read, to_r)
-                            if not chunk:
-                                break
-                            yield chunk
-                            sent += len(chunk)
-                    finally:
-                        try: p2.kill()
-                        except Exception: pass
-                while sent < max_bytes:
-                    pad = min(32768, max_bytes - sent)
-                    yield b"\x00" * pad
-                    sent += pad
-            return _SR(_ffmpeg_seek_stream(seek_sec, content_len), status_code=st_code, media_type="audio/mpeg", headers=hdrs)
-
-        async def _mp3_file_stream(start_pos, max_bytes):
-            sent = 0
-            if _OS.path.exists(j["p"]):
-                with open(j["p"], "rb") as f:
-                    if start_pos > 0:
-                        f.seek(start_pos)
-                    while sent < max_bytes:
-                        to_read = min(65536, max_bytes - sent)
-                        c = f.read(to_read)
-                        if c:
-                            yield c
-                            sent += len(c)
-                        elif j["d"]:
-                            break
-                        else:
-                            await _A.sleep(0.05)
-            while sent < max_bytes:
-                pad = min(65536, max_bytes - sent)
-                yield b"\x00" * pad
-                sent += pad
-        return _SR(_mp3_file_stream(st_b, content_len), status_code=st_code, media_type="audio/mpeg", headers=hdrs)
-
-    # NHANH B: AURORA / WAVIO / YUZIC TREN XE BYD & DIEN THOAI -> NATIVE M4A CO HOP SIDX!
-    j = _ens_m4a(vid)
     for _ in range(55):
-        if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 32768) or j["d"]:
+        if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 65536) or j["d"]:
             break
-        await _A.sleep(0.05)
+        await _A.sleep(0.07)
 
     cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
-    if cur_sz >= 4096 and not j.get("sidx_parsed"):
-        try:
-            with open(j["p"], "rb") as fh:
-                ex_s = _parse_sidx_exact_size(fh.read(32768))
-                if ex_s > 32768:
-                    j["total_sz"] = ex_s
-                    j["sidx_parsed"] = True
-        except Exception:
-            pass
-
     if st_b > 0 and not j["d"] and cur_sz < st_b + 65536:
-        for _ in range(12):
+        for _ in range(15):
             cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
             if cur_sz >= st_b + 65536 or j["d"]:
                 break
-            await _A.sleep(0.05)
+            await _A.sleep(0.07)
 
     cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
-    total_sz = cur_sz if (j["d"] and cur_sz > 32768) else max(j.get("total_sz", 3840000), cur_sz)
+    total_sz = cur_sz if (j["d"] and cur_sz > 65536) else max(j.get("total_sz", 7680000), cur_sz + 65536)
     if st_b >= total_sz:
-        st_b = max(0, total_sz - 32768)
+        st_b = max(0, total_sz - 65536)
     real_end = min(end_b, total_sz - 1) if (end_b is not None and end_b < total_sz) else (total_sz - 1)
     content_len = max(0, real_end - st_b + 1)
 
@@ -3804,33 +3655,50 @@ async def _k12_seek_mw(req, call_next):
         "Content-Length": str(content_len),
         "Cache-Control": "no-cache"
     }
+    if is_cast:
+        hdrs["transferMode.dlna.org"] = "Streaming"
+        hdrs["contentFeatures.dlna.org"] = "DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
     if has_range:
         hdrs["Content-Range"] = f"bytes {st_b}-{real_end}/{total_sz}"
     st_code = 206 if has_range else 200
 
     if req.method == "HEAD":
-        return _R(content=b"", status_code=st_code, media_type="audio/mp4", headers=hdrs)
+        return _R(content=b"", status_code=st_code, media_type=m_type, headers=hdrs)
 
     if st_b > 0 and not j["d"] and cur_sz < st_b + 32768:
-        async def _direct_m4a_range_proxy(start_pos, end_pos, max_bytes):
+        seek_sec = t_off if t_off > 0 else (st_b / 32000.0)
+        async def _ffmpeg_seek_stream(sec, max_bytes):
             sent = 0
-            u_out = await lp.run_in_executor(_DL_POOL, _get_direct_yt_url, vid, True)
+            u_out = await lp.run_in_executor(_DL_POOL, _get_direct_yt_url, vid)
             if u_out:
+                c2 = [
+                    "ffmpeg", "-loglevel", "error", "-ss", f"{sec:.2f}",
+                    "-i", u_out, "-vn", "-ac", "2", "-ar", "44100",
+                    "-c:a", f_codec, "-b:a", "256k"
+                ]
+                if is_cast:
+                    c2.extend(["-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", "pipe:1"])
+                else:
+                    c2.extend(["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "ipod", "pipe:1"])
+                p2 = _SP.Popen(c2, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
                 try:
-                    req_yt = _U.Request(u_out, headers={"User-Agent": "Mozilla/5.0", "Range": f"bytes={start_pos}-{end_pos}"})
-                    with _U.urlopen(req_yt, timeout=8, context=_CTX) as r_yt:
-                        while sent < max_bytes:
-                            to_r = min(65536, max_bytes - sent)
-                            chunk = await lp.run_in_executor(_REQ_POOL, r_yt.read, to_r)
-                            if not chunk:
-                                break
-                            yield chunk
-                            sent += len(chunk)
-                except Exception:
-                    pass
-        return _SR(_direct_m4a_range_proxy(st_b, real_end, content_len), status_code=st_code, media_type="audio/mp4", headers=hdrs)
+                    while sent < max_bytes:
+                        to_r = min(32768, max_bytes - sent)
+                        chunk = await lp.run_in_executor(_REQ_POOL, p2.stdout.read, to_r)
+                        if not chunk:
+                            break
+                        yield chunk
+                        sent += len(chunk)
+                finally:
+                    try: p2.kill()
+                    except Exception: pass
+            while sent < max_bytes:
+                pad = min(32768, max_bytes - sent)
+                yield b"\x00" * pad
+                sent += pad
+        return _SR(_ffmpeg_seek_stream(seek_sec, content_len), status_code=st_code, media_type=m_type, headers=hdrs)
 
-    async def _m4a_file_stream(start_pos, max_bytes):
+    async def _file_stream(start_pos, max_bytes):
         sent = 0
         if _OS.path.exists(j["p"]):
             with open(j["p"], "rb") as f:
@@ -3847,7 +3715,7 @@ async def _k12_seek_mw(req, call_next):
                     else:
                         await _A.sleep(0.04)
 
-    return _SR(_m4a_file_stream(st_b, content_len), status_code=st_code, media_type="audio/mp4", headers=hdrs)
+    return _SR(_file_stream(st_b, content_len), status_code=st_code, media_type=m_type, headers=hdrs)
 
 _SCACHE.clear()
 
@@ -5320,3 +5188,468 @@ async def _k17_private_playlists_mw(req, call_next):
 _SCACHE.clear()
 
 
+
+# --- K18: V1.7.0 100% STRICT USER ISOLATION (RECENT, MOST PLAYED, PLAYLISTS) & SYMFONIUM FULL SYNC ---
+# 1. Bo sung day du cac truong danh sach & so nguyen de Symfonium parse JSON/XML khong bao gio bi Unsuccessful!
+_LSTS.update({
+    "musicFolder", "index", "artist", "album", "song", "child",
+    "entry", "playlist", "genre", "structuredLyrics", "line",
+    "openSubsonicExtensions", "versions", "bookmark", "folder"
+})
+_INTS.update({
+    "size", "duration", "bitRate", "track", "discNumber", "year",
+    "playCount", "songCount", "albumCount", "offset", "start",
+    "samplingRate", "bitDepth", "channelCount", "userRating",
+    "position", "minutesAgo", "playerId"
+})
+
+def _clean_u_name(u):
+    s = str(u or "").strip().lower()
+    return s if s else "admin"
+
+# Vo hieu hoa viec ghi chung vao _YR khi khong co User cu the, ép MỌI ghi nhận phải đi qua đúng tên tài khoản `u`!
+def _record_u_yt(u, vid):
+    uname = _clean_u_name(u)
+    clean_v = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", str(vid or "").strip())
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
+    if not m:
+        return
+    v = m.group(1)
+    _ensure_vid_meta(v)
+    sd = _YL.get(v) or {}
+    p = _get_u_prof(uname)
+    item_k = f"yt:{v}"
+    now_s = _now_iso()
+    with _USER_PROF_LOCK:
+        rec = p.setdefault("recent", [])
+        if item_k in rec:
+            rec.remove(item_k)
+        rec.insert(0, item_k)
+        del rec[120:]
+        cnts = p.setdefault("counts", {})
+        cnts[item_k] = int(cnts.get(item_k, 0)) + 1
+        p.setdefault("ts", {})[item_k] = now_s
+        p["last_play"] = {
+            "source": "yt",
+            "id": v,
+            "title": str(sd.get("title") or ""),
+            "artist": str(sd.get("artist") or ""),
+            "ts": _TM.time()
+        }
+    _save_user_profiles()
+
+def _record_u_hdd(u, sid):
+    uname = _clean_u_name(u)
+    d = _fetch_single_hdd_meta(sid)
+    if not d:
+        return
+    raw_s = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(d.get("id") or sid))
+    raw_al = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(d.get("albumId") or d.get("parent") or raw_s))
+    al_id = "hdd_al-" + raw_al
+    song_id = "hdd_" + raw_s
+    p = _get_u_prof(uname)
+    item_k = f"hdd:{al_id}"
+    now_s = _now_iso()
+    with _USER_PROF_LOCK:
+        rec = p.setdefault("recent", [])
+        if item_k in rec:
+            rec.remove(item_k)
+        rec.insert(0, item_k)
+        del rec[120:]
+        cnts = p.setdefault("counts", {})
+        cnts[item_k] = int(cnts.get(item_k, 0)) + 1
+        p.setdefault("ts", {})[item_k] = now_s
+        p.setdefault("hdd_meta", {})[item_k] = {
+            "id": al_id,
+            "parent": str(d.get("artistId") or "hdd_ar"),
+            "isDir": "true",
+            "title": str(d.get("album") or d.get("title") or "HDD Album"),
+            "name": str(d.get("album") or d.get("title") or "HDD Album"),
+            "album": str(d.get("album") or d.get("title") or "HDD Album"),
+            "artist": str(d.get("artist") or "Artist"),
+            "coverArt": song_id,
+            "seedSongId": song_id
+        }
+        p["last_play"] = {
+            "source": "hdd",
+            "id": song_id,
+            "title": str(d.get("title") or ""),
+            "artist": str(d.get("artist") or ""),
+            "ts": _TM.time()
+        }
+    _save_user_profiles()
+
+# Ghi de _record_yt_play va _record_hdd_play_for_user de khong bao gio bi ro ri sang tai khoan khac!
+def _record_yt_play(vid, is_search=False):
+    if is_search:
+        return
+    u = _clean_u_name(_CUR_USER_CTX.get())
+    _record_u_yt(u, vid)
+
+def _record_hdd_play_for_user(u, sid):
+    _record_u_hdd(u, sid)
+
+def _build_strict_user_album_node(u, item_k, idx):
+    p = _get_u_prof(u)
+    p_cnt = str((p.get("counts") or {}).get(item_k, 1))
+    p_ts = str((p.get("ts") or {}).get(item_k) or _now_iso())
+
+    if item_k.startswith("hdd:"):
+        hm = (p.get("hdd_meta") or {}).get(item_k)
+        if not hm:
+            return None
+        at = dict(hm)
+        at["playCount"] = p_cnt
+        at["played"] = p_ts
+        at["created"] = p_ts
+        at["songCount"] = "10"
+        at["duration"] = "2400"
+        at["year"] = "2026"
+        return at
+
+    if item_k.startswith("yt:"):
+        vid = item_k[3:]
+        if not _RE.match(r"^[A-Za-z0-9_-]{11}$", vid):
+            return None
+        s = _YL.get(vid) or _ensure_vid_meta(vid)
+        if not s:
+            return None
+        tit = str(s.get("title") or vid)
+        art = str(s.get("artist") or "YouTube")
+        return {
+            "id": "al_" + vid,
+            "parent": str(s.get("artistId") or _artist_id(art)),
+            "isDir": "true",
+            "title": tit,
+            "name": tit,
+            "album": tit,
+            "artist": art,
+            "artistId": str(s.get("artistId") or _artist_id(art)),
+            "coverArt": "yt35_trk_" + vid,
+            "songCount": "25",
+            "duration": str(s.get("duration") or "240"),
+            "playCount": p_cnt,
+            "played": p_ts,
+            "created": str(s.get("created") or p_ts),
+            "year": "2026"
+        }
+    return None
+
+# Xay dung danh sach Album (Recently Played, Most Played, Newest, Random, Alphabetical) CACH LY TUYET DOI 100% THEO USER
+# Dong thoi ho tro phan trang `offset` & `size` chuan xac 100% de Symfonium Sync khong bi lap vo tan!
+def _build_isolated_album_list(u, ltype, sz, off, tag_name):
+    uname = _clean_u_name(u)
+    p = _get_u_prof(uname)
+    rt = _E.Element("subsonic-response", status="ok")
+    al_el = _E.SubElement(rt, tag_name)
+
+    items = []
+    if ltype == "recent":
+        # CHI LAY 100% TU LICH SU RIENG CUA USER NAY (Tuyet doi khong tron _YR chung!)
+        for k in list(p.get("recent") or []):
+            nd = _build_strict_user_album_node(uname, k, len(items))
+            if nd:
+                items.append(nd)
+
+    elif ltype == "frequent":
+        # CHI LAY 100% TU BO DEM LUOT NGHE RIENG CUA USER NAY!
+        cnts = p.get("counts") or {}
+        sorted_k = sorted(cnts.keys(), key=lambda k: (-int(cnts.get(k, 0)), -(list(reversed(p.get("recent") or [])).index(k) if k in (p.get("recent") or []) else -1)))
+        for k in sorted_k:
+            if int(cnts.get(k, 0)) > 0:
+                nd = _build_strict_user_album_node(uname, k, len(items))
+                if nd:
+                    items.append(nd)
+
+    elif ltype == "starred":
+        st_alb = (p.get("starred") or {}).get("albums") or {}
+        for alid, ts in list(st_alb.items()):
+            clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", alid)
+            item_k = f"hdd:{alid}" if alid.startswith("hdd") else f"yt:{clean_v}"
+            nd = _build_strict_user_album_node(uname, item_k, len(items))
+            if nd:
+                nd["starred"] = str(ts)
+                items.append(nd)
+
+    else:
+        # Cac muc chung (newest, random, alphabeticalByName, alphabeticalByArtist)
+        # Khi Symfonium Sync goi alphabeticalByName voi offset=0, 500... -> Phai phan trang dung `off : off + sz`!
+        seen_ids = set()
+        # 1. Lay cac bai trong kho rieng cua User truoc
+        for k in list(p.get("recent") or []):
+            nd = _build_strict_user_album_node(uname, k, len(items))
+            if nd and nd["id"] not in seen_ids:
+                seen_ids.add(nd["id"])
+                items.append(nd)
+        # 2. Neu la alphabetical (Symfonium Sync) hoac newest/random: Lay them tu HDD va YouTube nhung chi trong trang hien tai
+        if _HDD:
+            try:
+                hq = _hdd_q([("type", "alphabeticalByName" if "alpha" in ltype else "newest"), ("size", "500"), ("offset", "0")])
+                with _U.urlopen(_U.Request(f"{_HDD}/rest/getAlbumList2.view?{_ue(hq)}", headers={"User-Agent": "Resonus"}), timeout=4, context=_CTX) as r:
+                    hrt = _E.fromstring(r.read())
+                    for x in hrt.iter():
+                        if x.tag in ("album", "child") and x.attrib.get("id"):
+                            ha = dict(x.attrib)
+                            raw_aid = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", ha["id"])
+                            ha["id"] = "hdd_al-" + raw_aid
+                            ha["parent"] = "hdd_" + _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(ha.get("parent") or ha.get("artistId") or "ar"))
+                            ha["artistId"] = ha["parent"]
+                            ha["title"] = "[HDD] " + str(ha.get("title") or ha.get("name") or ha.get("album") or "Album")
+                            ha["name"] = ha["title"]
+                            ha["album"] = ha["title"]
+                            ha["isDir"] = "true"
+                            ha.setdefault("songCount", "10")
+                            ha.setdefault("duration", "2400")
+                            ha.setdefault("created", "2026-01-01T00:00:00.000Z")
+                            if ha["id"] not in seen_ids:
+                                seen_ids.add(ha["id"])
+                                items.append(ha)
+            except Exception:
+                pass
+
+        if ltype in ("random", "newest") and len(items) < 30:
+            for vid, s in list(_YL.items())[:60]:
+                if isinstance(s, dict) and not str(vid).startswith("hdd"):
+                    aid = "al_" + vid
+                    if aid not in seen_ids:
+                        seen_ids.add(aid)
+                        nd = _build_strict_user_album_node(uname, f"yt:{vid}", len(items))
+                        if nd:
+                            items.append(nd)
+
+        if ltype == "random":
+            _RND.shuffle(items)
+        elif "artist" in ltype.lower():
+            items.sort(key=lambda x: str(x.get("artist") or "").lower())
+        elif "alpha" in ltype.lower():
+            items.sort(key=lambda x: str(x.get("name") or x.get("title") or "").lower())
+
+    # Cắt đúng phân trang [off : off + sz] (Khi off >= len(items) sẽ trả về danh sách rỗng để Symfonium kết thúc Sync thành công!)
+    sliced = items[off : off + sz]
+    child_tag = "album" if "2" in tag_name else "child"
+    for nd in sliced:
+        _E.SubElement(al_el, child_tag, **nd)
+    return rt
+
+# Ham ho tro Symfonium Full Library Sync (getArtists, getIndexes, getAlbum, getMusicDirectory)
+def _build_symfonium_artists_xml(u, is_v2=True):
+    uname = _clean_u_name(u)
+    p = _get_u_prof(uname)
+    rt = _E.Element("subsonic-response", status="ok")
+    root_tag = "artists" if is_v2 else "indexes"
+    ar_root = _E.SubElement(rt, root_tag, ignoredArticles="The El La Los Las Le Les", lastModified=str(int(_TM.time() * 1000)))
+
+    ar_map = {}
+    # 1. Lay Nghe si tu HDD Navidrome
+    if _HDD:
+        try:
+            hq = _hdd_q([])
+            with _U.urlopen(_U.Request(f"{_HDD}/rest/getArtists.view?{_ue(hq)}", headers={"User-Agent": "Resonus"}), timeout=3, context=_CTX) as r:
+                hrt = _E.fromstring(r.read())
+                for x in hrt.iter():
+                    if x.tag == "artist" and x.attrib.get("id"):
+                        raw_id = _RE.sub(r"^(hdd\d*_|hdd_)+", "", x.attrib["id"])
+                        aid = "hdd_" + raw_id
+                        aname = str(x.attrib.get("name") or "Artist")
+                        acnt = str(x.attrib.get("albumCount") or "1")
+                        ar_map[aid] = {"id": aid, "name": aname, "albumCount": acnt if acnt.isdigit() else "1", "coverArt": aid}
+        except Exception:
+            pass
+
+    # 2. Lay Nghe si tu lich su & playlist cua User
+    user_vids = set()
+    for k in (p.get("recent") or []):
+        if k.startswith("yt:"):
+            user_vids.add(k[3:])
+    for pl_obj in (p.get("playlists") or {}).values():
+        if isinstance(pl_obj, dict):
+            for sid in (pl_obj.get("songs") or pl_obj.get("tracks") or []):
+                if not str(sid).startswith("hdd"):
+                    user_vids.add(_RE.sub(r"^(yt\d*_|al_|trk_)+", "", str(sid)))
+
+    for vid in user_vids:
+        s = _YL.get(vid)
+        if isinstance(s, dict):
+            aname = str(s.get("artist") or "YouTube").strip()
+            aid = str(s.get("artistId") or _artist_id(aname))
+            if aid not in ar_map:
+                ar_map[aid] = {"id": aid, "name": aname, "albumCount": "1", "coverArt": "yt35_trk_" + vid}
+            else:
+                ar_map[aid]["albumCount"] = str(int(ar_map[aid]["albumCount"]) + 1)
+
+    if not ar_map:
+        ar_map["ar_mirasonic"] = {"id": "ar_mirasonic", "name": "Mirasonic YouTube", "albumCount": "1", "coverArt": "ar_mirasonic"}
+
+    groups = {}
+    for aid, ainfo in ar_map.items():
+        nm = ainfo["name"].strip()
+        ch = nm[0].upper() if nm else "#"
+        if not ch.isalnum():
+            ch = "#"
+        groups.setdefault(ch, []).append(ainfo)
+
+    for let in sorted(groups.keys()):
+        idx_el = _E.SubElement(ar_root, "index", name=let)
+        for ainfo in sorted(groups[let], key=lambda x: x["name"].lower()):
+            _E.SubElement(idx_el, "artist", **ainfo)
+
+    return rt
+
+def _build_symfonium_single_album_xml(u, al_id):
+    s_id = str(al_id or "").strip()
+    clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", s_id)
+    if not _RE.match(r"^[A-Za-z0-9_-]{11}$", clean_v):
+        return None
+    s = _YL.get(clean_v) or _ensure_vid_meta(clean_v)
+    if not s:
+        return None
+    tit = str(s.get("title") or clean_v)
+    art = str(s.get("artist") or "YouTube")
+    arid = str(s.get("artistId") or _artist_id(art))
+    dur = str(s.get("duration") or "240") if str(s.get("duration", "")).isdigit() else "240"
+
+    rt = _E.Element("subsonic-response", status="ok")
+    al_el = _E.SubElement(
+        rt, "album",
+        id="al_" + clean_v,
+        name=tit,
+        title=tit,
+        album=tit,
+        artist=art,
+        artistId=arid,
+        coverArt="yt35_trk_" + clean_v,
+        songCount="1",
+        duration=dur,
+        created=str(s.get("created") or "2026-01-01T00:00:00.000Z"),
+        year="2026"
+    )
+    sc = dict(s)
+    sc["id"] = clean_v
+    sc["parent"] = "al_" + clean_v
+    sc["albumId"] = "al_" + clean_v
+    sc["artistId"] = arid
+    sc["isDir"] = "false"
+    sc["type"] = "music"
+    sc["isVideo"] = "false"
+    sc["track"] = "1"
+    sc["discNumber"] = "1"
+    sc["year"] = "2026"
+    sc["suffix"] = "m4a"
+    sc["contentType"] = "audio/mp4"
+    sc["bitRate"] = "256"
+    _E.SubElement(al_el, "song", **sc)
+    return rt
+
+@app.middleware("http")
+async def _k18_master_guard_mw(req, call_next):
+    if req.method == "OPTIONS":
+        return _R(content=b"", status_code=200, headers=_CORS)
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if not pl.startswith("/rest/"):
+        return await call_next(req)
+
+    # 1. CHUYEN TOAN BO THAM SO POST BODY VAO QUERY_STRING NGAY O TANG NGOAI CUNG!
+    # Giup Symfonium (vốn dùng POST cho mọi lệnh Sync) va cac middleware ben duoi doc duoc đúng `u`, `type`, `offset`, `size`!
+    if req.method == "POST":
+        bf = await req.body()
+        if bf:
+            try:
+                extra = [(str(k), str(v)) for k, v in _J.loads(bf).items()] if bf.strip().startswith(b"{") else _pq(bf.decode("utf-8", "ignore"), keep_blank_values=True)
+                old_qs = req.scope.get("query_string", b"").decode("utf-8", "ignore")
+                new_qs = (old_qs + "&" + _ue(extra)).lstrip("&")
+                req.scope["query_string"] = new_qs.encode("utf-8")
+            except Exception:
+                pass
+        async def _rc():
+            return {"type": "http.request", "body": bf, "more_body": False}
+        req._receive = _rc
+
+    _load_addon_opts()
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    qd = dict(qi)
+    fv = qd.get("f", "").lower()
+    js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
+    cb = qd.get("callback") if fv == "jsonp" else None
+    if not _check_auth(qd):
+        return await call_next(req)
+
+    uname = _clean_u_name(qd.get("u"))
+    cl_app = str(qd.get("c") or req.headers.get("user-agent") or "").lower()
+    is_symfonium = "symfonium" in cl_app
+    lp = _A.get_running_loop()
+
+    tok = _CUR_USER_CTX.set(uname)
+    try:
+        # 2. OpenSubsonic Extensions & MusicFolders (Symfonium kiem tra dau tien khi Sync)
+        if "getopensubsonicextensions" in pl:
+            rt = _E.Element("subsonic-response", status="ok")
+            ext = _E.SubElement(rt, "openSubsonicExtensions")
+            for ename in ("transcodeOffset", "formPost", "songLyrics"):
+                e_el = _E.SubElement(ext, "openSubsonicExtension", name=ename)
+                v_el = _E.SubElement(e_el, "versions")
+                v_el.text = "1"
+            return _fmt(rt, js, cb)
+
+        if "getmusicfolders" in pl:
+            rt = _E.Element("subsonic-response", status="ok")
+            mf = _E.SubElement(rt, "musicFolders")
+            _E.SubElement(mf, "musicFolder", id="1", name="Mirasonic Library")
+            return _fmt(rt, js, cb)
+
+        if "getgenres" in pl:
+            rt = _E.Element("subsonic-response", status="ok")
+            _E.SubElement(rt, "genres")
+            return _fmt(rt, js, cb)
+
+        # 3. Scrobble: Chi ghi nhan khi submission != false, va ghi vao DUNG tai khoan `uname`!
+        if "/scrobble" in pl:
+            s_ids = [str(v).strip() for k, v in qi if k == "id" and str(v).strip()]
+            subm = str(qd.get("submission") or "true").lower() != "false"
+            if subm:
+                for sid in s_ids:
+                    if sid.startswith("hdd"):
+                        _DL_POOL.submit(_record_u_hdd, uname, sid)
+                    else:
+                        _DL_POOL.submit(_record_u_yt, uname, sid)
+            rt = _E.Element("subsonic-response", status="ok")
+            return _fmt(rt, js, cb)
+
+        # 4. getAlbumList / getAlbumList2: Cach ly tuyet doi 100% Recently Played & Most Played theo tung User + Phan trang chuan cho Symfonium!
+        if "getalbumlist" in pl:
+            ltype = str(qd.get("type") or "newest").strip()
+            sz = int(qd.get("size") or 50) if str(qd.get("size", "")).isdigit() else 50
+            off = int(qd.get("offset") or 0) if str(qd.get("offset", "")).isdigit() else 0
+            tg = "albumList2" if "2" in pl else "albumList"
+            rt = await lp.run_in_executor(_REQ_POOL, _build_isolated_album_list, uname, ltype, sz, off, tg)
+            return _fmt(rt, js, cb)
+
+        # 5. Ho tro Symfonium Sync: getArtists, getIndexes & getAlbum (Khong sinh 28 bai Endless khi Symfonium dang Sync thu vien!)
+        if ("getartists" in pl or "getindexes" in pl) and is_symfonium:
+            is_v2 = "getartists" in pl
+            rt = await lp.run_in_executor(_REQ_POOL, _build_symfonium_artists_xml, uname, is_v2)
+            return _fmt(rt, js, cb)
+
+        if "/getalbum" in pl and "getalbumlist" not in pl and is_symfonium:
+            al_id = str(qd.get("id") or "").strip()
+            if al_id and not al_id.startswith("hdd"):
+                rt = await lp.run_in_executor(_REQ_POOL, _build_symfonium_single_album_xml, uname, al_id)
+                if rt is not None:
+                    return _fmt(rt, js, cb)
+
+        return await call_next(req)
+    finally:
+        _CUR_USER_CTX.reset(tok)
+
+# Lam sach lich su bi lan truoc do: Xoa cac bai hat khong thuoc ve ban than hoac bi trung trong _USER_PROFILES
+try:
+    for _uk, _up in list(_USER_PROFILES.items()):
+        if isinstance(_up, dict) and "playlists" in _up:
+            # Dam bao moi playlist chi thuoc ve owner=_uk
+            for _pk, _pv in list((_up.get("playlists") or {}).items()):
+                if isinstance(_pv, dict) and _pv.get("owner") and _clean_u_name(_pv.get("owner")) != _clean_u_name(_uk):
+                    _up["playlists"].pop(_pk, None)
+    _save_user_profiles()
+except Exception:
+    pass
+
+_SCACHE.clear()
