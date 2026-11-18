@@ -4634,18 +4634,18 @@ async def _k15_user_isolation_mw(req, call_next):
         _CUR_USER_CTX.reset(tok)
 
 _SCACHE.clear()
-# --- K16: V1.6.3 V1.5.8 NON-BLOCKING ENGINE + CPU PRIORITY + DELAYED NEXT-1 PREFETCH ---
+# --- K16: V1.6.5 STRICT SINGLE-TRACK ARTWORK (FORCE WAVIO UI REFRESH ON MINIMIZE/RESUME) ---
 try:
     from PIL import Image as _PIL_IMG
     _HAS_PIL = True
 except Exception:
     _HAS_PIL = False
 
-_ART_DIR = "/data/art_cache_v34" if _OS.path.isdir("/data") else "/tmp/art_cache_v34"
+_ART_DIR = "/data/art_cache_v35" if _OS.path.isdir("/data") else "/tmp/art_cache_v35"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_RAM.clear()
-_FAST_ART_POOL = _CF.ThreadPoolExecutor(max_workers=12)
-_NEXT_TRACK_MAP = {}
+_FAST_ART_POOL = _CF.ThreadPoolExecutor(max_workers=8)
+_CUR_PLAYING_ART_ID = {"id": ""}
 
 def _fix_url_500(u):
     u = str(u or "").strip()
@@ -4662,13 +4662,11 @@ def _crop_500_square(d, mode="square"):
     if mode == "square" and d.startswith(b"\xff\xd8") and len(d) < 95000:
         return d
 
-    # Sieu toc: Neu co PIL (Pillow), cat anh vuong 500x500 truc tiep trong RAM chi mat 0.004 giay (0% nghẽn CPU!)
     if _HAS_PIL:
         try:
             im = _PIL_IMG.open(_IO.BytesIO(d)).convert("RGB")
             w, h = im.size
             if mode == "hq43":
-                # Cat bo 2 dai vien den tren/duoi cua anh 4:3 YouTube (lay vung 16:9 chinh giua)
                 h_169 = int(w * 9 / 16)
                 if h > h_169:
                     top = (h - h_169) // 2
@@ -4761,7 +4759,7 @@ def _fetch_yt_500_vid(vid):
 def _norm_art_key(cid):
     s = str(cid or "").strip()
     is_hdd = bool(_RE.match(r"^hdd\d*_", s))
-    clean_s = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", s)
+    clean_s = _RE.sub(r"^(hdd\d*_|yt\d*_|trk_)+", "", s)
     if clean_s.startswith("al_all_"):
         clean_s = clean_s[7:]
     if _RE.match(r"^ar_[0-9a-f]{10}$", clean_s) and not is_hdd:
@@ -4795,7 +4793,7 @@ def _get_art_600(cid):
         cf = _OS.path.join(_ART_DIR, _H.md5(ckey.encode()).hexdigest() + ".jpg")
         if _OS.path.exists(cf) and _OS.path.getsize(cf) > 300:
             d = open(cf, "rb").read()
-            if len(_ART_RAM) < 500:
+            if len(_ART_RAM) < 300:
                 _ART_RAM[ckey] = d
             return d
 
@@ -4834,8 +4832,9 @@ def _get_art_600(cid):
             return None
 
         if kind == "hdd" and _HDD:
+            # Uu tien lay anh nhung rieng cua tung file nhac (raw_id) truoc khi lay anh chung cua Album!
             cands = []
-            for x in [raw_id, "al-" + k_id, k_id, "mf-" + raw_id, "al-" + raw_id]:
+            for x in [raw_id, k_id, "al-" + k_id, "mf-" + raw_id, "al-" + raw_id]:
                 if x and x not in cands:
                     cands.append(x)
             for cand in cands:
@@ -4859,44 +4858,42 @@ def _get_art_600(cid):
 def _get_art_bytes(cid, req_size=0):
     return _get_art_600(cid)
 
+# XOA BO 100% PRELOAD: Khong tai truoc bat ky bai nao khi mo danh sach!
 def _prewarm_list(ids):
     return
 
 _orig_fmt_base_k16 = _orig_fmt_k11
 def _patched_fmt_k16(rt, js, cb=None):
     _cln(rt)
-    seq_ids = []
     for x in rt.iter():
         a = x.attrib
         sid = str(a.get("id") or "")
         ca = str(a.get("coverArt") or "")
         if x.tag in ("song", "child", "entry") and a.get("isDir") != "true":
+            # BI QUYET CHONG KET COVER KHI MINIMIZE TREN WAVIO:
+            # Gan cho MOI BAI HAT mot ma coverArt & albumId DOC LAP theo chinh ID cua bai hat do!
+            # Khi qua bai moi va mo lai App tu Minimize, Wavio thay albumId & coverArt thay doi 100% nen buoc phai ve lai Cover moi!
             if sid.startswith("hdd"):
                 alid = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(a.get("albumId") or a.get("parent") or ""))
                 rid_clean = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", sid)
                 if alid and rid_clean:
-                    _ART_MAP[rid_clean] = alid
-                raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", ca or ("al-" + alid if alid else rid_clean))
-                a["coverArt"] = "hdd34_" + raw_ca
+                    _ART_MAP[rid_clean] = rid_clean
+                a["coverArt"] = "hdd35_trk_" + rid_clean
+                a["albumId"] = "hdd_al_" + rid_clean
+                a["parent"] = "hdd_al_" + rid_clean
             else:
                 vid_clean = _RE.sub(r"^(yt\d*_|al_)+", "", sid)
-                a["coverArt"] = "yt34_" + vid_clean
-            seq_ids.append((_norm_art_key(sid)[1], a["coverArt"]))
+                a["coverArt"] = "yt35_trk_" + vid_clean
+                a["albumId"] = "al_" + vid_clean
+                a["parent"] = "al_" + vid_clean
         elif ca:
-            raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_)+", "", ca)
+            raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_|trk_)+", "", ca)
             while raw_ca.startswith("al_") and len(raw_ca) >= 14:
                 raw_ca = raw_ca[3:]
             if ca.startswith("hdd") or sid.startswith("hdd"):
-                a["coverArt"] = "hdd34_" + raw_ca
+                a["coverArt"] = "hdd35_" + raw_ca
             else:
-                a["coverArt"] = "yt34_" + raw_ca
-
-    # Ghi nho 2 bai ke tiep trong danh sach de nap tre sau 3 giay khi CPU da ranh
-    for i in range(len(seq_ids) - 1):
-        _NEXT_TRACK_MAP[seq_ids[i][0]] = [x[1] for x in seq_ids[i+1 : i+3]]
-    if seq_ids:
-        # Nap ngay anh cua bai dau tien trong danh sach khi vua bam mo Album
-        _FAST_ART_POOL.submit(_get_art_600, seq_ids[0][1])
+                a["coverArt"] = "yt35_" + raw_ca
 
     rt.attrib.update({"status": rt.attrib.get("status", "ok"), "version": "1.16.1", "type": "subsonic", "serverVersion": "1.16.1"})
     if js:
@@ -4906,14 +4903,6 @@ def _patched_fmt_k16(rt, js, cb=None):
     return _R(content=b'<?xml version="1.0" encoding="UTF-8"?>\n' + _E.tostring(rt, encoding="utf-8"), media_type="application/xml; charset=utf-8", headers=_CORS)
 
 _orig_fmt_k11 = _patched_fmt_k16
-
-def _delayed_next_prefetch(cur_sid):
-    try:
-        _, cur_k, _ = _norm_art_key(cur_sid)
-        for nxt_ca in _NEXT_TRACK_MAP.get(cur_k, []):
-            _get_art_600(nxt_ca)
-    except Exception:
-        pass
 
 @app.middleware("http")
 async def _k16_ondemand_art_mw(req, call_next):
@@ -4925,7 +4914,7 @@ async def _k16_ondemand_art_mw(req, call_next):
     qd = dict(qi)
     lp = _A.get_running_loop()
 
-    # 1. Tra anh 500x500 vuong vuc y het ban 1.5.8 (Them ETag rieng cho tung ma anh de Wavio khong bao gio ket anh cu!)
+    # 1. Tra anh 500x500 voi Cache-Control: no-cache de khi mo lai App tu Minimize, Wavio LUON cap nhat anh cua bai dang hat!
     if "/getcoverart" in pl:
         cid = str(qd.get("id") or "").strip()
         d = await lp.run_in_executor(_FAST_ART_POOL, _get_art_600, cid) if cid else None
@@ -4937,28 +4926,24 @@ async def _k16_ondemand_art_mw(req, call_next):
                 headers={
                     **_CORS,
                     "Content-Length": str(len(d)),
-                    "Cache-Control": "public, max-age=604800",
+                    "Cache-Control": "no-cache, must-revalidate",
                     "ETag": etag
                 }
             )
         return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1)), "Cache-Control": "no-store"})
 
-    # 2. Giu nguyen co che NON-BLOCKING cua ban 1.5.8 khi bat dau Stream,
-    # nhung nhuong 0.2s dau tien cho _get_art_600 chay truoc khi yt-dlp khoi dong,
-    # va hen gio sau 3.0 giay (khi nhac da phat em) moi tai san anh cho 1-2 bai ke tiep!
+    # 2. Choi bai nao CHI LOAD DUNG COVER BAI DO (Zero background preload!)
     if "/stream" in pl or "/download" in pl:
         sid = str(qd.get("id") or "").strip()
         rng = req.headers.get("range") or req.headers.get("Range") or ""
         if sid and ((not rng) or rng.startswith("bytes=0-")):
+            _CUR_PLAYING_ART_ID["id"] = sid
             kind, k_id, _ = _norm_art_key(sid)
             if f"{kind}_{k_id}" not in _ART_RAM:
                 try:
-                    await _A.wait_for(lp.run_in_executor(_FAST_ART_POOL, _get_art_600, sid), timeout=0.25)
+                    await _A.wait_for(lp.run_in_executor(_FAST_ART_POOL, _get_art_600, sid), timeout=0.35)
                 except Exception:
                     pass
-            t_job = _TH.Timer(3.0, lambda: _FAST_ART_POOL.submit(_delayed_next_prefetch, sid))
-            t_job.daemon = True
-            t_job.start()
 
     return await call_next(req)
 
