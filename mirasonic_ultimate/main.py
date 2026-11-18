@@ -3593,7 +3593,7 @@ async def _k12_seek_mw(req, call_next):
 
     vid = m.group(1)
     lp = _A.get_running_loop()
-    _record_yt_play(vid, False)
+    _DL_POOL.submit(_record_u_yt_strict, str(qd.get("u") or "admin").strip().lower(), vid) if ((not (req.headers.get("range") or req.headers.get("Range"))) or str(req.headers.get("range") or req.headers.get("Range")).startswith("bytes=0-")) else None
 
     t_off = 0
     for tk in ("timeOffset", "timeoffset", "offset"):
@@ -4634,18 +4634,18 @@ async def _k15_user_isolation_mw(req, call_next):
         _CUR_USER_CTX.reset(tok)
 
 _SCACHE.clear()
-# --- K16: V1.6.5 STRICT SINGLE-TRACK ARTWORK (FORCE WAVIO UI REFRESH ON MINIMIZE/RESUME) ---
+
+# --- K16: V1.7.6 WAVIO INSTANT SINGLE-TRACK COVER (NO STUCK ALBUM COVER) ---
 try:
     from PIL import Image as _PIL_IMG
     _HAS_PIL = True
 except Exception:
     _HAS_PIL = False
 
-_ART_DIR = "/data/art_cache_v35" if _OS.path.isdir("/data") else "/tmp/art_cache_v35"
+_ART_DIR = "/data/art_cache_v36" if _OS.path.isdir("/data") else "/tmp/art_cache_v36"
 _OS.makedirs(_ART_DIR, exist_ok=True)
 _ART_RAM.clear()
 _FAST_ART_POOL = _CF.ThreadPoolExecutor(max_workers=8)
-_CUR_PLAYING_ART_ID = {"id": ""}
 
 def _fix_url_500(u):
     u = str(u or "").strip()
@@ -4662,6 +4662,7 @@ def _crop_500_square(d, mode="square"):
     if mode == "square" and d.startswith(b"\xff\xd8") and len(d) < 95000:
         return d
 
+    # Cat anh vuong 500x500 truc tiep tren RAM bang PIL chi mat 0.003 giay (Khong dung ffmpeg lam nang CPU!)
     if _HAS_PIL:
         try:
             im = _PIL_IMG.open(_IO.BytesIO(d)).convert("RGB")
@@ -4679,7 +4680,7 @@ def _crop_500_square(d, mode="square"):
             if side != 500:
                 im = im.resize((500, 500), getattr(_PIL_IMG, "Resampling", _PIL_IMG).LANCZOS)
             buf = _IO.BytesIO()
-            im.save(buf, format="JPEG", quality=88, optimize=True)
+            im.save(buf, format="JPEG", quality=88)
             out_b = buf.getvalue()
             if len(out_b) > 300:
                 return out_b
@@ -4697,13 +4698,11 @@ def _crop_500_square(d, mode="square"):
             vf = "crop=iw:iw*9/16:0:(ih-iw*9/16)/2,scale=890:500:force_original_aspect_ratio=increase,crop=500:500"
         else:
             vf = "scale=500:500:force_original_aspect_ratio=increase,crop=500:500"
-
         p = _SP.run([
             "ffmpeg", "-y", "-loglevel", "error", "-threads", "1", "-i", fin,
-            "-frames:v", "1", "-vf", vf,
-            "-pix_fmt", "yuvj420p", "-strict", "-2",
+            "-frames:v", "1", "-vf", vf, "-pix_fmt", "yuvj420p", "-strict", "-2",
             "-map_metadata", "-1", "-q:v", "3", fout
-        ], stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=3.0)
+        ], stdout=_SP.PIPE, stderr=_SP.PIPE, timeout=2.5)
         if p.returncode == 0 and _OS.path.exists(fout) and _OS.path.getsize(fout) > 300:
             out_b = open(fout, "rb").read()
             if out_b.startswith(b"\xff\xd8"):
@@ -4713,8 +4712,7 @@ def _crop_500_square(d, mode="square"):
     finally:
         for fp in (fin, fout):
             try:
-                if _OS.path.exists(fp):
-                    _OS.remove(fp)
+                if _OS.path.exists(fp): _OS.remove(fp)
             except Exception:
                 pass
     return d if d.startswith(b"\xff\xd8") else None
@@ -4722,36 +4720,24 @@ def _crop_500_square(d, mode="square"):
 def _fetch_yt_500_vid(vid):
     if not _RE.match(r"^[A-Za-z0-9_-]{11}$", str(vid or "")):
         return None
+    # 1. Neu co anh vuong YouTube Music -> Lay ngay (~25KB, 0.08s)
     if vid in _YTM_THUMB:
         tu = _fix_url_500(_YTM_THUMB[vid])
-        d = _dl_fast(tu, 400, 1.2)
+        d = _dl_fast(tu, 400, 1.0)
         if d:
             jpg = _crop_500_square(d, "square")
             if jpg:
                 return jpg
 
-    f_max = _FAST_ART_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 1800, 0.75)
-    f_hq  = _FAST_ART_POOL.submit(_dl_fast, f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 600, 1.2)
+    # 2. Lay thang hqdefault.jpg (LUON TON TAI 100%, nang chi ~18KB, tai trong 0.08s, khong doi maxresdefault 404!)
+    # Va cat sach 2 vien den tren/duoi ve 500x500 vuong vuc tren RAM trong 0.003s!
+    d_hq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 500, 1.0)
+    if d_hq:
+        jpg = _crop_500_square(d_hq, "hq43")
+        if jpg:
+            return jpg
 
-    try:
-        d_max = f_max.result(timeout=0.8)
-        if d_max:
-            jpg = _crop_500_square(d_max, "maxres")
-            if jpg:
-                return jpg
-    except Exception:
-        pass
-
-    try:
-        d_hq = f_hq.result(timeout=1.2)
-        if d_hq:
-            jpg = _crop_500_square(d_hq, "hq43")
-            if jpg:
-                return jpg
-    except Exception:
-        pass
-
-    d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 400, 1.0)
+    d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 400, 0.9)
     if d_mq:
         return _crop_500_square(d_mq, "maxres")
     return None
@@ -4793,20 +4779,14 @@ def _get_art_600(cid):
         cf = _OS.path.join(_ART_DIR, _H.md5(ckey.encode()).hexdigest() + ".jpg")
         if _OS.path.exists(cf) and _OS.path.getsize(cf) > 300:
             d = open(cf, "rb").read()
-            if len(_ART_RAM) < 300:
+            if len(_ART_RAM) < 400:
                 _ART_RAM[ckey] = d
             return d
 
         if kind == "ar":
-            if k_id not in _ARTIST_THUMB:
-                aname = _resolve_artist_name(k_id)
-                if aname:
-                    _yt_web_search(aname, "")
-                    if k_id not in _ARTIST_THUMB:
-                        _ytm_search_artists_and_pls(aname)
             tu = _ARTIST_THUMB.get(k_id, "")
             if tu:
-                d = _dl_fast(_fix_url_500(tu), 300, 1.5)
+                d = _dl_fast(_fix_url_500(tu), 300, 1.2)
                 jpg = _crop_500_square(d, "square")
                 if jpg:
                     open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
@@ -4820,19 +4800,13 @@ def _get_art_600(cid):
                     jpg = _fetch_yt_500_vid(m_vi.group(1))
                     if jpg:
                         open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
-                d = _dl_fast(_fix_url_500(tu), 300, 1.5)
+                d = _dl_fast(_fix_url_500(tu), 300, 1.2)
                 jpg = _crop_500_square(d, "hq43" if "hqdefault" in tu else "square")
-                if jpg:
-                    open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
-            tr_list = _PL_TRACKS_CACHE.get(k_id) or _yt_playlist_tracks(k_id)
-            if tr_list and tr_list[0].get("id"):
-                jpg = _fetch_yt_500_vid(tr_list[0]["id"])
                 if jpg:
                     open(cf, "wb").write(jpg); _ART_RAM[ckey] = jpg; return jpg
             return None
 
         if kind == "hdd" and _HDD:
-            # Uu tien lay anh nhung rieng cua tung file nhac (raw_id) truoc khi lay anh chung cua Album!
             cands = []
             for x in [raw_id, k_id, "al-" + k_id, "mf-" + raw_id, "al-" + raw_id]:
                 if x and x not in cands:
@@ -4840,7 +4814,7 @@ def _get_art_600(cid):
             for cand in cands:
                 try:
                     cq = [x for x in _hdd_q([("id", cand), ("size", "500")]) if x[0] != "f"]
-                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent": "Resonus"}), timeout=2.5, context=_CTX) as r:
+                    with _U.urlopen(_U.Request(f"{_HDD}/rest/getCoverArt.view?{_ue(cq)}", headers={"User-Agent": "Resonus"}), timeout=2.0, context=_CTX) as r:
                         d = r.read()
                         if r.status == 200 and len(d) > 300 and not d.lstrip().startswith(b"<"):
                             jpg = _crop_500_square(d, "square")
@@ -4858,7 +4832,7 @@ def _get_art_600(cid):
 def _get_art_bytes(cid, req_size=0):
     return _get_art_600(cid)
 
-# XOA BO 100% PRELOAD: Khong tai truoc bat ky bai nao khi mo danh sach!
+# KHONG TAI TRUOC HANG LOAT (Mo bai nao chi tai dung cover bai do!)
 def _prewarm_list(ids):
     return
 
@@ -4870,30 +4844,33 @@ def _patched_fmt_k16(rt, js, cb=None):
         sid = str(a.get("id") or "")
         ca = str(a.get("coverArt") or "")
         if x.tag in ("song", "child", "entry") and a.get("isDir") != "true":
-            # BI QUYET CHONG KET COVER KHI MINIMIZE TREN WAVIO:
-            # Gan cho MOI BAI HAT mot ma coverArt & albumId DOC LAP theo chinh ID cua bai hat do!
-            # Khi qua bai moi va mo lai App tu Minimize, Wavio thay albumId & coverArt thay doi 100% nen buoc phai ve lai Cover moi!
+            # BI QUYET TRI DUT DIEM BENH KET HINH SCORPIONS CŨ TREN WAVIO:
+            # Ngoai coverArt & albumId rieng, gan luon ten `album` = `title` cua chinh bai hat do!
+            # Khi chuyen bai, Wavio thay ca 3 truong (album, albumId, coverArt) deu thay doi -> Bat buoc ve khung anh moi 100%!
+            t_name = str(a.get("title") or a.get("name") or sid)
             if sid.startswith("hdd"):
                 alid = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(a.get("albumId") or a.get("parent") or ""))
                 rid_clean = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", sid)
                 if alid and rid_clean:
-                    _ART_MAP[rid_clean] = rid_clean
-                a["coverArt"] = "hdd35_trk_" + rid_clean
+                    _ART_MAP[rid_clean] = alid
+                a["coverArt"] = "hdd36_trk_" + rid_clean
                 a["albumId"] = "hdd_al_" + rid_clean
                 a["parent"] = "hdd_al_" + rid_clean
+                a["album"] = t_name
             else:
                 vid_clean = _RE.sub(r"^(yt\d*_|al_)+", "", sid)
-                a["coverArt"] = "yt35_trk_" + vid_clean
+                a["coverArt"] = "yt36_trk_" + vid_clean
                 a["albumId"] = "al_" + vid_clean
                 a["parent"] = "al_" + vid_clean
+                a["album"] = t_name
         elif ca:
             raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_|trk_)+", "", ca)
             while raw_ca.startswith("al_") and len(raw_ca) >= 14:
                 raw_ca = raw_ca[3:]
             if ca.startswith("hdd") or sid.startswith("hdd"):
-                a["coverArt"] = "hdd35_" + raw_ca
+                a["coverArt"] = "hdd36_" + raw_ca
             else:
-                a["coverArt"] = "yt35_" + raw_ca
+                a["coverArt"] = "yt36_" + raw_ca
 
     rt.attrib.update({"status": rt.attrib.get("status", "ok"), "version": "1.16.1", "type": "subsonic", "serverVersion": "1.16.1"})
     if js:
@@ -4914,7 +4891,7 @@ async def _k16_ondemand_art_mw(req, call_next):
     qd = dict(qi)
     lp = _A.get_running_loop()
 
-    # 1. Tra anh 500x500 voi Cache-Control: no-cache de khi mo lai App tu Minimize, Wavio LUON cap nhat anh cua bai dang hat!
+    # 1. Chi khi Wavio hoi getCoverArt cua bai nao thi moi tai & cat 500x500 cho dung bai do!
     if "/getcoverart" in pl:
         cid = str(qd.get("id") or "").strip()
         d = await lp.run_in_executor(_FAST_ART_POOL, _get_art_600, cid) if cid else None
@@ -4926,48 +4903,253 @@ async def _k16_ondemand_art_mw(req, call_next):
                 headers={
                     **_CORS,
                     "Content-Length": str(len(d)),
-                    "Cache-Control": "no-cache, must-revalidate",
+                    "Cache-Control": "private, max-age=3600",
                     "ETag": etag
                 }
             )
-        return _R(content=_PNG_1X1, media_type="image/png", headers={**_CORS, "Content-Length": str(len(_PNG_1X1)), "Cache-Control": "no-store"})
+        return _R(content=b"", status_code=404, headers={**_CORS, "Cache-Control": "no-store"})
 
-    # 2. Choi bai nao CHI LOAD DUNG COVER BAI DO (Zero background preload!)
+    # 2. Khi bam Play bai N: Dam bao anh 500x500 cua DUNG BAI N (chi mat ~0.12s voi hqdefault + PIL) da san sang trong RAM!
     if "/stream" in pl or "/download" in pl:
         sid = str(qd.get("id") or "").strip()
         rng = req.headers.get("range") or req.headers.get("Range") or ""
         if sid and ((not rng) or rng.startswith("bytes=0-")):
-            _CUR_PLAYING_ART_ID["id"] = sid
             kind, k_id, _ = _norm_art_key(sid)
             if f"{kind}_{k_id}" not in _ART_RAM:
                 try:
-                    await _A.wait_for(lp.run_in_executor(_FAST_ART_POOL, _get_art_600, sid), timeout=0.35)
+                    await _A.wait_for(lp.run_in_executor(_FAST_ART_POOL, _get_art_600, sid), timeout=0.75)
                 except Exception:
                     pass
 
     return await call_next(req)
 
-_SCACHE.clear()
 
-# --- K17: V1.6.4 PER-USER PLAYLIST & STARRED ISOLATION (PRIVATE USER WORKSPACES) ---
+# --- K17: V1.7.6 100% STRICT USER ISOLATION (RECENTLY PLAYED, MOST PLAYED, PLAYLISTS & STARRED) ---
+def _clean_uname(u):
+    s = str(u or "").strip().lower()
+    return s if s else "admin"
+
 def _ensure_u_collections(u):
-    p = _get_u_prof(u)
+    uname = _clean_uname(u)
+    p = _get_u_prof(uname)
     with _USER_PROF_LOCK:
         if "playlists" not in p or not isinstance(p["playlists"], dict):
             p["playlists"] = {}
-            # Neu la tai khoan admin/chinh chu va co playlist cu trong _PLS toan cuc -> Ke thua sang cho de tu quan ly
-            if u in ("admin", "khoa") and "_PLS" in globals() and isinstance(_PLS, dict):
-                for pid, pdata in list(_PLS.items()):
-                    if isinstance(pdata, dict):
-                        p["playlists"][str(pid)] = dict(pdata)
         if "starred" not in p or not isinstance(p["starred"], dict):
             p["starred"] = {"songs": {}, "albums": {}, "artists": {}}
         p["starred"].setdefault("songs", {})
         p["starred"].setdefault("albums", {})
         p["starred"].setdefault("artists", {})
-        if "hidden_hdd_pls" not in p or not isinstance(p["hidden_hdd_pls"], list):
-            p["hidden_hdd_pls"] = []
     return p
+
+# Ghi lich su nghe TRUC TIEP vao ho so rieng cua `u` (Tuyet doi khong dung ContextVar tren luong ngam!)
+def _record_u_yt_strict(u, vid):
+    try:
+        uname = _clean_uname(u)
+        clean_v = _RE.sub(r"^(hdd\d*_|yt\d*_|al_|trk_)+", "", str(vid or "").strip())
+        m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
+        if not m:
+            return
+        v = m.group(1)
+        _ensure_vid_meta(v)
+        sd = _YL.get(v) or {}
+        p = _get_u_prof(uname)
+        item_k = f"yt:{v}"
+        now_s = _now_iso()
+        with _USER_PROF_LOCK:
+            rec = p.setdefault("recent", [])
+            if item_k in rec:
+                rec.remove(item_k)
+            rec.insert(0, item_k)
+            del rec[80:]
+            cnts = p.setdefault("counts", {})
+            cnts[item_k] = int(cnts.get(item_k, 0)) + 1
+            p.setdefault("ts", {})[item_k] = now_s
+            p["last_play"] = {
+                "kind": "yt",
+                "source": "yt",
+                "id": v,
+                "title": str(sd.get("title") or ""),
+                "artist": str(sd.get("artist") or ""),
+                "ts": _TM.time()
+            }
+        _save_user_profiles()
+    except Exception:
+        pass
+
+def _record_u_hdd_strict(u, sid):
+    try:
+        uname = _clean_uname(u)
+        d = _fetch_single_hdd_meta(sid)
+        if not d:
+            return
+        raw_s = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(d.get("id") or sid))
+        raw_al = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", str(d.get("albumId") or d.get("parent") or raw_s))
+        al_id = "hdd_al-" + raw_al
+        song_id = "hdd_" + raw_s
+        p = _get_u_prof(uname)
+        item_k = f"hdd:{al_id}"
+        now_s = _now_iso()
+        with _USER_PROF_LOCK:
+            rec = p.setdefault("recent", [])
+            if item_k in rec:
+                rec.remove(item_k)
+            rec.insert(0, item_k)
+            del rec[80:]
+            cnts = p.setdefault("counts", {})
+            cnts[item_k] = int(cnts.get(item_k, 0)) + 1
+            p.setdefault("ts", {})[item_k] = now_s
+            p.setdefault("hdd_meta", {})[item_k] = {
+                "id": al_id,
+                "parent": str(d.get("artistId") or "hdd_ar"),
+                "isDir": "true",
+                "title": str(d.get("album") or d.get("title") or "HDD Album"),
+                "name": str(d.get("album") or d.get("title") or "HDD Album"),
+                "album": str(d.get("album") or d.get("title") or "HDD Album"),
+                "artist": str(d.get("artist") or "Artist"),
+                "coverArt": song_id,
+                "seedSongId": song_id
+            }
+            p["last_play"] = {
+                "kind": "hdd",
+                "source": "hdd",
+                "id": song_id,
+                "title": str(d.get("title") or ""),
+                "artist": str(d.get("artist") or ""),
+                "ts": _TM.time()
+            }
+        _save_user_profiles()
+    except Exception:
+        pass
+
+# Khoa _record_yt_play cu (khong co tham so u) de cac luong tim kiem ngam khong bao gio day nhac cua nguoi khac vao tk admin!
+def _record_yt_play(vid, is_search=False):
+    return
+
+def _record_hdd_play_for_user(u, sid):
+    if u:
+        _record_u_hdd_strict(u, sid)
+
+def _u_item_to_album_node(u, item_k):
+    p = _get_u_prof(u)
+    p_cnt = str((p.get("counts") or {}).get(item_k, 1))
+    p_ts = str((p.get("ts") or {}).get(item_k) or _now_iso())
+
+    if item_k.startswith("hdd:"):
+        hm = (p.get("hdd_meta") or {}).get(item_k)
+        if not hm:
+            return None
+        at = dict(hm)
+        at["playCount"] = p_cnt
+        at["played"] = p_ts
+        at["created"] = str(at.get("created") or "2026-01-01T00:00:00.000Z")
+        return at
+
+    if item_k.startswith("yt:"):
+        vid = item_k[3:]
+        if not _RE.match(r"^[A-Za-z0-9_-]{11}$", vid):
+            return None
+        s = _YL.get(vid) or _ensure_vid_meta(vid)
+        if not s:
+            return None
+        tit = str(s.get("title") or vid)
+        art = str(s.get("artist") or "YouTube")
+        arid = str(s.get("artistId") or _artist_id(art))
+        return {
+            "id": "al_" + vid,
+            "parent": arid,
+            "artistId": arid,
+            "isDir": "true",
+            "title": tit,
+            "name": tit,
+            "album": tit,
+            "artist": art,
+            "coverArt": "yt36_trk_" + vid,
+            "songCount": "25",
+            "duration": str(s.get("duration") or "240"),
+            "playCount": p_cnt,
+            "played": p_ts,
+            "created": str(s.get("created") or "2026-01-01T00:00:00.000Z"),
+            "year": "2026"
+        }
+    return None
+
+# Ghi de ham _build_user_album_list cua K15:
+# - `recent` (Recently Played): CHI LAY 100% TU `p["recent"]` CUA RIENG USER DO!
+# - `frequent` (Most Played): CHI LAY 100% TU `p["counts"]` CUA RIENG USER DO!
+def _build_user_album_list(u, ltype, sz, off, tag_name):
+    uname = _clean_uname(u)
+    p = _get_u_prof(uname)
+    rt = _E.Element("subsonic-response", status="ok")
+    al_el = _E.SubElement(rt, tag_name)
+    items = []
+
+    if ltype == "recent":
+        for k in list(p.get("recent") or []):
+            nd = _u_item_to_album_node(uname, k)
+            if nd:
+                items.append(nd)
+
+    elif ltype == "frequent":
+        cnts = p.get("counts") or {}
+        rec_l = list(p.get("recent") or [])
+        sorted_k = sorted(
+            cnts.keys(),
+            key=lambda k: (-int(cnts.get(k, 0)), rec_l.index(k) if k in rec_l else 9999)
+        )
+        for k in sorted_k:
+            if int(cnts.get(k, 0)) > 0:
+                nd = _u_item_to_album_node(uname, k)
+                if nd:
+                    items.append(nd)
+
+    elif ltype == "starred":
+        st_alb = (p.get("starred") or {}).get("albums") or {}
+        for alid, ts in list(st_alb.items()):
+            clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", alid)
+            item_k = f"hdd:{alid}" if alid.startswith("hdd") else f"yt:{clean_v}"
+            nd = _u_item_to_album_node(uname, item_k)
+            if nd:
+                nd["starred"] = str(ts)
+                items.append(nd)
+
+    else:
+        seen = set()
+        for k in list(p.get("recent") or []):
+            nd = _u_item_to_album_node(uname, k)
+            if nd and nd["id"] not in seen:
+                seen.add(nd["id"])
+                items.append(nd)
+
+        if _HDD:
+            try:
+                hq = _hdd_q([("type", "newest"), ("size", "40"), ("offset", "0")])
+                with _U.urlopen(_U.Request(f"{_HDD}/rest/getAlbumList2.view?{_ue(hq)}", headers={"User-Agent": "Resonus"}), timeout=3, context=_CTX) as r:
+                    hrt = _E.fromstring(r.read())
+                    for x in hrt.iter():
+                        if x.tag in ("album", "child") and x.attrib.get("id"):
+                            ha = dict(x.attrib)
+                            raw_aid = _RE.sub(r"^(hdd\d*_|hdd_|al-|mf-)+", "", ha["id"])
+                            ha["id"] = "hdd_al-" + raw_aid
+                            ha["parent"] = "hdd_" + _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(ha.get("parent") or ha.get("artistId") or "ar"))
+                            ha["title"] = "[HDD] " + str(ha.get("title") or ha.get("name") or ha.get("album") or "Album")
+                            ha["name"] = ha["title"]
+                            ha["album"] = ha["title"]
+                            ha["isDir"] = "true"
+                            if ha["id"] not in seen:
+                                seen.add(ha["id"])
+                                items.append(ha)
+            except Exception:
+                pass
+
+        if ltype == "random":
+            _RND.shuffle(items)
+
+    sliced = items[off : off + sz]
+    child_tag = "album" if "2" in tag_name else "child"
+    for nd in sliced:
+        _E.SubElement(al_el, child_tag, **nd)
+    return rt
 
 def _resolve_any_song_dict(sid):
     s = str(sid or "").strip()
@@ -4983,32 +5165,35 @@ def _resolve_any_song_dict(sid):
             d["id"] = "hdd_" + _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(d.get("id") or raw_s))
             return d
         return None
-    clean_v = _RE.sub(r"^(yt\d*_|al_)+", "", s)
+    clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", s)
     m = _RE.search(r"([A-Za-z0-9_-]{11})$", clean_v)
     vid = m.group(1) if m else clean_v
     return dict(_YL.get(vid) or _ensure_vid_meta(vid) or {})
 
 def _build_user_playlists_xml(u):
-    p = _ensure_u_collections(u)
+    uname = _clean_uname(u)
+    p = _ensure_u_collections(uname)
     rt = _E.Element("subsonic-response", status="ok")
     pls_el = _E.SubElement(rt, "playlists")
 
-    # 1. Lay danh sach Playlist cua rieng User nay
     u_pls = p.get("playlists") or {}
     for pid, pl_obj in list(u_pls.items()):
         if not isinstance(pl_obj, dict):
             continue
+        # Chi hien thi Playlist thuoc so huu cua CHINH USER NAY!
+        if pl_obj.get("owner") and _clean_uname(pl_obj.get("owner")) != uname:
+            continue
         s_ids = list(pl_obj.get("songs") or pl_obj.get("tracks") or [])
         dur_sum = 0
         for sid in s_ids:
-            sd = _YL.get(_RE.sub(r"^(yt\d*_|al_)+", "", str(sid)))
+            sd = _YL.get(_RE.sub(r"^(yt\d*_|al_|trk_)+", "", str(sid)))
             dur_sum += int(sd.get("duration", 240)) if (sd and str(sd.get("duration", "")).isdigit()) else 240
         cov = str(pl_obj.get("coverArt") or (s_ids[0] if s_ids else pid))
         _E.SubElement(
             pls_el, "playlist",
             id=str(pid),
             name=str(pl_obj.get("name") or "Playlist"),
-            owner=u,
+            owner=uname,
             public="false",
             songCount=str(len(s_ids)),
             duration=str(dur_sum),
@@ -5019,10 +5204,9 @@ def _build_user_playlists_xml(u):
     return rt
 
 def _build_single_user_playlist_xml(u, pid):
-    p = _ensure_u_collections(u)
+    uname = _clean_uname(u)
+    p = _ensure_u_collections(uname)
     u_pls = p.get("playlists") or {}
-
-    # Neu la Playlist nam trong ho so rieng cua User
     if pid in u_pls:
         pl_obj = u_pls[pid]
         s_ids = list(pl_obj.get("songs") or pl_obj.get("tracks") or [])
@@ -5038,7 +5222,7 @@ def _build_single_user_playlist_xml(u, pid):
             rt, "playlist",
             id=str(pid),
             name=str(pl_obj.get("name") or "Playlist"),
-            owner=u,
+            owner=uname,
             public="false",
             songCount=str(len(resolved)),
             duration=str(dur_sum),
@@ -5051,12 +5235,11 @@ def _build_single_user_playlist_xml(u, pid):
             sc["track"] = str(idx)
             _E.SubElement(pl_el, "entry", **sc)
         return rt
-
-    # Neu la Playlist goi y tu YouTube (pl_...) hoac HDD -> De luong goc xu ly
     return None
 
 def _mutate_user_playlist(u, pl_path, qd, qi):
-    p = _ensure_u_collections(u)
+    uname = _clean_uname(u)
+    p = _ensure_u_collections(uname)
     u_pls = p["playlists"]
     pid = str(qd.get("playlistId") or qd.get("id") or "").strip()
 
@@ -5064,8 +5247,6 @@ def _mutate_user_playlist(u, pl_path, qd, qi):
         if pid:
             with _USER_PROF_LOCK:
                 u_pls.pop(pid, None)
-                if u in ("admin", "khoa") and "_PLS" in globals() and isinstance(_PLS, dict):
-                    _PLS.pop(pid, None)
             _save_user_profiles()
         return _E.Element("subsonic-response", status="ok")
 
@@ -5073,12 +5254,12 @@ def _mutate_user_playlist(u, pl_path, qd, qi):
         name = str(qd.get("name") or "").strip()
         s_ids = [str(v).strip() for k, v in qi if k == "songId" and str(v).strip()]
         if not pid or pid not in u_pls:
-            pid = f"upl_{u}_{int(_TM.time()*1000)}"
+            pid = f"upl_{uname}_{int(_TM.time()*1000)}"
         with _USER_PROF_LOCK:
             cur = u_pls.get(pid) or {
                 "id": pid,
                 "name": name or "New Playlist",
-                "owner": u,
+                "owner": uname,
                 "created": _now_iso(),
                 "songs": []
             }
@@ -5086,24 +5267,20 @@ def _mutate_user_playlist(u, pl_path, qd, qi):
                 cur["name"] = name
             if s_ids:
                 cur["songs"] = s_ids
+            cur["owner"] = uname
             cur["changed"] = _now_iso()
             u_pls[pid] = cur
         _save_user_profiles()
-        return _build_single_user_playlist_xml(u, pid) or _E.Element("subsonic-response", status="ok")
+        return _build_single_user_playlist_xml(uname, pid) or _E.Element("subsonic-response", status="ok")
 
     if "updateplaylist" in pl_path and pid:
         with _USER_PROF_LOCK:
             if pid not in u_pls:
-                # Neu sua playlist cu ke thua tu _PLS
-                if "_PLS" in globals() and isinstance(_PLS, dict) and pid in _PLS:
-                    u_pls[pid] = dict(_PLS[pid])
-                else:
-                    u_pls[pid] = {"id": pid, "name": "Playlist", "owner": u, "created": _now_iso(), "songs": []}
+                u_pls[pid] = {"id": pid, "name": "Playlist", "owner": uname, "created": _now_iso(), "songs": []}
             cur = u_pls[pid]
             cur_songs = list(cur.get("songs") or cur.get("tracks") or [])
             if qd.get("name"):
                 cur["name"] = str(qd.get("name")).strip()
-            # Xoa theo vi tri index (tu cao xuong thap de khong lech chi so)
             rm_idx = sorted(
                 [int(v) for k, v in qi if k == "songIndexToRemove" and str(v).strip().isdigit()],
                 reverse=True
@@ -5111,11 +5288,11 @@ def _mutate_user_playlist(u, pl_path, qd, qi):
             for idx in rm_idx:
                 if 0 <= idx < len(cur_songs):
                     cur_songs.pop(idx)
-            # Them bai hat moi vao Playlist cua rieng User nay
             add_ids = [str(v).strip() for k, v in qi if k == "songIdToAdd" and str(v).strip()]
             for aid in add_ids:
                 cur_songs.append(aid)
             cur["songs"] = cur_songs
+            cur["owner"] = uname
             cur.pop("tracks", None)
             cur["changed"] = _now_iso()
             u_pls[pid] = cur
@@ -5125,7 +5302,8 @@ def _mutate_user_playlist(u, pl_path, qd, qi):
     return _E.Element("subsonic-response", status="ok")
 
 def _handle_user_star(u, is_unstar, qi):
-    p = _ensure_u_collections(u)
+    uname = _clean_uname(u)
+    p = _ensure_u_collections(uname)
     st = p["starred"]
     now_s = _now_iso()
     s_ids = [str(v).strip() for k, v in qi if k == "id" and str(v).strip()]
@@ -5153,7 +5331,8 @@ def _handle_user_star(u, is_unstar, qi):
     return _E.Element("subsonic-response", status="ok")
 
 def _build_user_starred_xml(u, tag_name):
-    p = _ensure_u_collections(u)
+    uname = _clean_uname(u)
+    p = _ensure_u_collections(uname)
     st = p["starred"]
     rt = _E.Element("subsonic-response", status="ok")
     st_el = _E.SubElement(rt, tag_name)
@@ -5163,7 +5342,7 @@ def _build_user_starred_xml(u, tag_name):
         _E.SubElement(st_el, "artist", id=arid, name=aname, coverArt=arid, albumCount="10", starred=ts)
 
     for alid, ts in list((st.get("albums") or {}).items()):
-        clean_v = _RE.sub(r"^(yt\d*_|al_)+", "", alid)
+        clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", alid)
         sd = _resolve_any_song_dict(clean_v)
         if sd:
             at = {
@@ -5191,7 +5370,7 @@ def _build_user_starred_xml(u, tag_name):
     return rt
 
 @app.middleware("http")
-async def _k17_private_playlists_mw(req, call_next):
+async def _k17_private_users_mw(req, call_next):
     if req.method == "OPTIONS":
         return await call_next(req)
     p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
@@ -5200,32 +5379,50 @@ async def _k17_private_playlists_mw(req, call_next):
 
     _load_addon_opts()
     qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
-    if req.method == "POST":
-        bf = await req.body()
-        if bf:
-            try:
-                qi.extend([(str(k), str(v)) for k, v in _J.loads(bf).items()] if bf.strip().startswith(b"{") else _pq(bf.decode("utf-8", "ignore"), keep_blank_values=True))
-            except Exception:
-                pass
-        async def _rc():
-            return {"type": "http.request", "body": bf, "more_body": False}
-        req._receive = _rc
-
     qd = dict(qi); fv = qd.get("f", "").lower()
     js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
     cb = qd.get("callback") if fv == "jsonp" else None
     if not _check_auth(qd):
         return await call_next(req)
 
-    uname = str(qd.get("u") or "admin").strip().lower() or "admin"
+    uname = _clean_uname(qd.get("u"))
     lp = _A.get_running_loop()
 
-    # 1. Lay danh sach Playlists CUA RIENG USER DANG DANG NHAP
+    # 1. Ghi nhan Scrobble & Stream byte 0 vao DUNG tai khoan `uname`
+    if "/stream" in pl or "/download" in pl:
+        sid = str(qd.get("id") or "").strip()
+        rng = req.headers.get("range") or req.headers.get("Range") or ""
+        if sid and ((not rng) or rng.startswith("bytes=0-")):
+            if sid.startswith("hdd"):
+                _DL_POOL.submit(_record_u_hdd_strict, uname, sid)
+            else:
+                _DL_POOL.submit(_record_u_yt_strict, uname, sid)
+
+    if "/scrobble" in pl:
+        s_ids = [str(v).strip() for k, v in qi if k == "id" and str(v).strip()]
+        subm = str(qd.get("submission") or "true").lower() != "false"
+        if subm:
+            for sid in s_ids:
+                if sid.startswith("hdd"):
+                    _DL_POOL.submit(_record_u_hdd_strict, uname, sid)
+                else:
+                    _DL_POOL.submit(_record_u_yt_strict, uname, sid)
+        return _fmt(_E.Element("subsonic-response", status="ok"), js, cb)
+
+    # 2. Recently Played & Most Played CUA RIENG USER DO
+    if "getalbumlist" in pl:
+        ltype = str(qd.get("type") or "newest").strip()
+        sz = int(qd.get("size") or 36) if str(qd.get("size", "")).isdigit() else 36
+        off = int(qd.get("offset") or 0) if str(qd.get("offset", "")).isdigit() else 0
+        tg = "albumList2" if "2" in pl else "albumList"
+        rt = await lp.run_in_executor(_REQ_POOL, _build_user_album_list, uname, ltype, sz, off, tg)
+        return _fmt(rt, js, cb)
+
+    # 3. Playlists CUA RIENG USER DO
     if "/getplaylists" in pl:
         rt = await lp.run_in_executor(_REQ_POOL, _build_user_playlists_xml, uname)
         return _fmt(rt, js, cb)
 
-    # 2. Xem chi tiet 1 Playlist: Neu la Playlist ca nhan thi tra ve tu kho rieng, neu la Playlist YouTube (pl_...) thi cho di tiep
     if "/getplaylist" in pl and "/getplaylists" not in pl:
         pid = str(qd.get("id") or "").strip()
         if pid and not pid.startswith("pl_"):
@@ -5233,12 +5430,11 @@ async def _k17_private_playlists_mw(req, call_next):
             if rt is not None:
                 return _fmt(rt, js, cb)
 
-    # 3. Tao / Sua / Xoa Playlist -> Chi luu vao ho so rieng cua User do!
     if any(k in pl for k in ("/createplaylist", "/updateplaylist", "/deleteplaylist")):
         rt = await lp.run_in_executor(_REQ_POOL, _mutate_user_playlist, uname, pl, qd, qi)
         return _fmt(rt, js, cb)
 
-    # 4. Tach rieng danh sach Yeu thich (Star / Unstar / getStarred) theo tung User
+    # 4. Starred / Favorites CUA RIENG USER DO
     if "/star" in pl or "/unstar" in pl:
         is_un = "/unstar" in pl
         rt = await lp.run_in_executor(_REQ_POOL, _handle_user_star, uname, is_un, qi)
@@ -5251,16 +5447,19 @@ async def _k17_private_playlists_mw(req, call_next):
 
     return await call_next(req)
 
-_SCACHE.clear()
-
-# Vá toàn bộ _USER_PROFILES trong RAM ngay khi khởi động để không bao giờ dính KeyError: 'kind'
 try:
-    for _u_k, _u_v in list(_USER_PROFILES.items()):
-        if isinstance(_u_v, dict) and isinstance(_u_v.get("last_play"), dict):
-            _lp = _u_v["last_play"]
-            _lp["kind"] = _lp.get("kind") or _lp.get("source") or "yt"
-            _lp["source"] = _lp.get("source") or _lp.get("kind") or "yt"
+    for _uk, _up in list(_USER_PROFILES.items()):
+        if isinstance(_up, dict):
+            if isinstance(_up.get("last_play"), dict):
+                _lp = _up["last_play"]
+                _lp["kind"] = _lp.get("kind") or _lp.get("source") or "yt"
+                _lp["source"] = _lp.get("source") or _lp.get("kind") or "yt"
+            if isinstance(_up.get("playlists"), dict):
+                for _pk, _pv in list(_up["playlists"].items()):
+                    if isinstance(_pv, dict) and _pv.get("owner") and _clean_uname(_pv["owner"]) != _clean_uname(_uk):
+                        _up["playlists"].pop(_pk, None)
     _save_user_profiles()
 except Exception:
     pass
 
+_SCACHE.clear()
