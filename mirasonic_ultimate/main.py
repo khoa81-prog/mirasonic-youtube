@@ -5627,7 +5627,9 @@ def _fetch_pure_ytm_pool(seed_vid, seed_title, seed_artist, is_vn_seed, pool_lim
         if dur_s < 65 or dur_s > 900:
             return
         seen.add(vid)
-        if thumb_u:
+        if thumb_u and "ytimg.com" in thumb_u.lower():
+            return
+        if thumb_u and ("googleusercontent.com" in thumb_u.lower() or "ggpht.com" in thumb_u.lower()):
             _YTM_THUMB[vid] = thumb_u
         sd = _make_song(vid, tit, art, tit, str(dur_s), is_vid=False, thumb_url=thumb_u)
         if sd:
@@ -6187,9 +6189,21 @@ async def _k18_dynamic_radio_and_hdd_mw(req, call_next):
 _DL_POOL.submit(_get_cached_hdd_pool)
 _SCACHE.clear()
 
-
-# --- K19: V1.8.6 UNIFIED SOURCE PREFIX BADGES ([HDD] / [YTM] / [YT]) ---
+# --- K19: V1.8.7 STRICT SOURCE PREFIX BADGES ([HDD] / [YTM] / [YT]) ---
 _PFX_CLEAN_RE = _RE.compile(r"^\s*\[(HDD|YTM|YT)\]\s*", _RE.I)
+
+# Don sach cac video YouTube (ytimg.com) bi luu nham trong _YTM_THUMB tu cac ban truoc
+for _k_ytm, _v_ytm in list(_YTM_THUMB.items()):
+    if "ytimg.com" in str(_v_ytm or "").lower():
+        _YTM_THUMB.pop(_k_ytm, None)
+
+def _is_ytm_track(vid):
+    tu = str(_YTM_THUMB.get(vid) or "").lower()
+    if not tu or "ytimg.com" in tu:
+        return False
+    if "googleusercontent.com" in tu or "ggpht.com" in tu:
+        return True
+    return False
 
 def _detect_source_prefix(sid, ca=""):
     s = str(sid or "").strip()
@@ -6199,7 +6213,7 @@ def _detect_source_prefix(sid, ca=""):
     raw_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", s)
     m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_v)
     vid = m.group(1) if m else raw_v
-    if vid and "_is_ytm_track" in globals() and _is_ytm_track(vid):
+    if vid and _is_ytm_track(vid):
         return "[YTM] "
     return "[YT] "
 
