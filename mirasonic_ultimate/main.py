@@ -6049,6 +6049,50 @@ def _get_similar_songs_xml_v183(uname, sid, count=20, tag_name="similarSongs2"):
         _E.SubElement(sim_el, "song", **dict(tr))
     return rt
 
+def _build_random_hdd_songs_as_albums(sz=24, tag_name="albumList2"):
+    rt = _E.Element("subsonic-response", status="ok")
+    al_el = _E.SubElement(rt, tag_name)
+    pool = _get_cached_hdd_pool()
+    if not pool:
+        return rt
+    _RND.shuffle(pool)
+    child_tag = "album" if "2" in tag_name else "child"
+    seen = set()
+    cnt = 0
+    for hs in pool:
+        if cnt >= sz:
+            break
+        raw_sid = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(hs.get("id") or ""))
+        if not raw_sid or raw_sid in seen:
+            continue
+        seen.add(raw_sid)
+        raw_alid = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(hs.get("albumId") or hs.get("parent") or raw_sid))
+        raw_arid = _RE.sub(r"^(hdd\d*_|hdd_|ar_|ar-)+", "", str(hs.get("artistId") or "ar"))
+        if raw_alid and raw_sid:
+            _ART_MAP[raw_sid] = raw_alid
+        tit = str(hs.get("title") or hs.get("name") or "HDD Song")
+        art = str(hs.get("artist") or "HDD Artist")
+        dur = str(hs.get("duration") or "240") if str(hs.get("duration", "")).isdigit() else "240"
+        yr = str(hs.get("year") or "2026") if str(hs.get("year", "")).isdigit() else "2026"
+        nd = {
+            "id": "hdd_al_" + raw_sid,
+            "parent": "hdd_" + raw_arid,
+            "artistId": "hdd_" + raw_arid,
+            "isDir": "true",
+            "title": tit,
+            "name": tit,
+            "album": tit,
+            "artist": art,
+            "coverArt": "hdd36_trk_" + raw_sid,
+            "songCount": "20",
+            "duration": dur,
+            "created": str(hs.get("created") or "2026-01-01T00:00:00.000Z"),
+            "year": yr
+        }
+        _E.SubElement(al_el, child_tag, **nd)
+        cnt += 1
+    return rt
+
 def _get_smart_random_songs_v183(uname, count=20):
     p = _get_u_prof(_clean_uname(uname))
     lp_info = p.get("last_play") or {}
@@ -6119,6 +6163,13 @@ async def _k18_dynamic_radio_and_hdd_mw(req, call_next):
         if sid:
             rt = await lp.run_in_executor(_REQ_POOL, _get_similar_songs_xml_v183, uname, sid, cnt, tg)
             return _fmt(rt, js, cb)
+
+    # Tab "Random" tren Wavio (ke ben Random songs) -> Chi tra ve cac bai hat ngau nhien 100% tu kho o cung HDD!
+    if "getalbumlist" in pl and str(qd.get("type") or "").strip().lower() == "random":
+        sz = int(qd.get("size") or 24) if str(qd.get("size", "")).isdigit() else 24
+        tg = "albumList2" if "2" in pl else "albumList"
+        rt = await lp.run_in_executor(_REQ_POOL, _build_random_hdd_songs_as_albums, sz, tg)
+        return _fmt(rt, js, cb)
 
     if "getrandomsongs" in pl and not qd.get("genre") and not qd.get("fromYear"):
         cnt = int(qd.get("size") or 20) if str(qd.get("size", "")).isdigit() else 20
