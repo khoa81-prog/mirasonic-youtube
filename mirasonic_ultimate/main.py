@@ -6186,3 +6186,52 @@ async def _k18_dynamic_radio_and_hdd_mw(req, call_next):
 
 _DL_POOL.submit(_get_cached_hdd_pool)
 _SCACHE.clear()
+
+
+# --- K19: V1.8.6 UNIFIED SOURCE PREFIX BADGES ([HDD] / [YTM] / [YT]) ---
+_PFX_CLEAN_RE = _RE.compile(r"^\s*\[(HDD|YTM|YT)\]\s*", _RE.I)
+
+def _detect_source_prefix(sid, ca=""):
+    s = str(sid or "").strip()
+    c = str(ca or "").strip()
+    if s.startswith("hdd") or c.startswith("hdd"):
+        return "[HDD] "
+    raw_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", s)
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", raw_v)
+    vid = m.group(1) if m else raw_v
+    if vid and "_is_ytm_track" in globals() and _is_ytm_track(vid):
+        return "[YTM] "
+    return "[YT] "
+
+def _apply_src_pfx(val, pfx):
+    s = _PFX_CLEAN_RE.sub("", str(val or "")).strip()
+    return f"{pfx}{s}" if s else val
+
+_orig_fmt_k16_for_k19 = _orig_fmt_k11
+def _patched_fmt_k19(rt, js, cb=None):
+    for x in rt.iter():
+        a = x.attrib
+        sid = str(a.get("id") or "")
+        ca = str(a.get("coverArt") or "")
+        if not sid or sid.startswith("pl_") or sid.startswith("upl_") or sid.startswith("ar_"):
+            continue
+        if x.tag in ("song", "child", "entry") and a.get("isDir") != "true":
+            pfx = _detect_source_prefix(sid, ca)
+            if a.get("title"):
+                a["title"] = _apply_src_pfx(a["title"], pfx)
+            if a.get("name"):
+                a["name"] = _apply_src_pfx(a["name"], pfx)
+            if a.get("album"):
+                a["album"] = _apply_src_pfx(a["album"], pfx)
+        elif x.tag in ("album", "directory") or (x.tag == "child" and a.get("isDir") == "true"):
+            pfx = _detect_source_prefix(sid, ca)
+            if a.get("name"):
+                a["name"] = _apply_src_pfx(a["name"], pfx)
+            if a.get("title"):
+                a["title"] = _apply_src_pfx(a["title"], pfx)
+            if a.get("album"):
+                a["album"] = _apply_src_pfx(a["album"], pfx)
+    return _orig_fmt_k16_for_k19(rt, js, cb)
+
+_orig_fmt_k11 = _patched_fmt_k19
+_SCACHE.clear()
