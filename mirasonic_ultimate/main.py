@@ -3593,7 +3593,7 @@ async def _k12_seek_mw(req, call_next):
 
     vid = m.group(1)
     lp = _A.get_running_loop()
-    _DL_POOL.submit(_record_u_yt_strict, str(qd.get("u") or "admin").strip().lower(), vid) if ((not (req.headers.get("range") or req.headers.get("Range"))) or str(req.headers.get("range") or req.headers.get("Range")).startswith("bytes=0-")) else None
+    None if ((not (req.headers.get("range") or req.headers.get("Range"))) or str(req.headers.get("range") or req.headers.get("Range")).startswith("bytes=0-")) else None
 
     t_off = 0
     for tk in ("timeOffset", "timeoffset", "offset"):
@@ -6755,5 +6755,38 @@ try:
         _save_user_profiles()
 except Exception:
     pass
+
+_SCACHE.clear()
+
+
+# --- K23: V1.8.11 ZERO-FALLBACK STRICT USER ISOLATION & NO-CACHE PRIVATE VIEWS ---
+def _strict_uname_or_none(u):
+    s = str(u or "").strip().lower()
+    return s if s else None
+
+_orig_rec_yt_k22 = _record_u_yt_strict
+def _record_u_yt_strict(u, vid):
+    uname = _strict_uname_or_none(u)
+    if not uname:
+        return
+    return _orig_rec_yt_k22(uname, vid)
+
+_orig_rec_hdd_k17 = _record_u_hdd_strict
+def _record_u_hdd_strict(u, sid):
+    uname = _strict_uname_or_none(u)
+    if not uname:
+        return
+    return _orig_rec_hdd_k17(uname, sid)
+
+@app.middleware("http")
+async def _k23_private_nocache_guard_mw(req, call_next):
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    resp = await call_next(req)
+    if pl.startswith("/rest/") and any(k in pl for k in (
+        "getalbumlist", "getplaylists", "getplaylist", "getstarred", "getnowplaying", "getplayqueue"
+    )):
+        resp.headers["Cache-Control"] = "private, no-store, no-cache, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+    return resp
 
 _SCACHE.clear()
