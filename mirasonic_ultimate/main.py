@@ -6343,3 +6343,315 @@ async def _k20_next_art_prefetch_mw(req, call_next):
     return await call_next(req)
 
 _SCACHE.clear()
+
+
+# --- K21: V1.8.9 FIX [DS PHAT] YOUTUBE PLAYLIST PLAYBACK & HD 600x600 YOUTUBE COVER ART ---
+_ART_DIR = "/data/art_cache_v37" if _OS.path.isdir("/data") else "/tmp/art_cache_v37"
+_OS.makedirs(_ART_DIR, exist_ok=True)
+_ART_RAM.clear()
+
+# Giu lai cache anh HDD tu v36, chi tai lai anh YouTube/YTM o do phan giai HD 600x600
+_YT_PL_TRACKS_CACHE = {}
+
+def _fix_url_500(u):
+    u = str(u or "").strip()
+    if u.startswith("//"):
+        u = "https:" + u
+    if "yt3.ggpht.com" in u or "googleusercontent.com" in u:
+        u = _RE.sub(r"=s\d+[^/]*$", "=s600-c-k-c0x00ffffff-no-rj", u)
+        u = _RE.sub(r"=w\d+-h\d+[^/]*$", "=w600-h600-l92-rj", u)
+    return u
+
+def _crop_500_square(d, mode="square"):
+    if not d or len(d) < 300:
+        return None
+    if mode == "square" and d.startswith(b"\xff\xd8"):
+        return d
+
+    if _HAS_PIL:
+        try:
+            im = _PIL_IMG.open(_IO.BytesIO(d)).convert("RGB")
+            w, h = im.size
+            if mode == "hq43" or (w == 480 and h == 360) or (w == 640 and h == 480):
+                h_169 = int(w * 9 / 16)
+                if h > h_169:
+                    top = (h - h_169) // 2
+                    im = im.crop((0, top, w, top + h_169))
+                    w, h = im.size
+            side = min(w, h)
+            left = (w - side) // 2
+            top = (h - side) // 2
+            im = im.crop((left, top, left + side, top + side))
+            if side != 600:
+                im = im.resize((600, 600), getattr(_PIL_IMG, "Resampling", _PIL_IMG).LANCZOS)
+            buf = _IO.BytesIO()
+            im.save(buf, format="JPEG", quality=90, optimize=True)
+            out_b = buf.getvalue()
+            if len(out_b) > 300:
+                return out_b
+        except Exception:
+            pass
+
+    try:
+        vf = "crop=ih*9/16:ih*9/16:(iw-ih*9/16)/2:ih*7/32,scale=600:600" if mode == "hq43" else "crop=ih:ih:(iw-ih)/2:0,scale=600:600"
+        p = _SP.run(
+            ["ffmpeg", "-loglevel", "error", "-threads", "1", "-i", "pipe:0", "-frames:v", "1", "-vf", vf, "-q:v", "2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+            input=d, stdout=_SP.PIPE, stderr=_SP.DEVNULL, timeout=2.0
+        )
+        if p.returncode == 0 and len(p.stdout) > 300 and p.stdout.startswith(b"\xff\xd8"):
+            return p.stdout
+    except Exception:
+        pass
+    return d if d.startswith(b"\xff\xd8") else None
+
+def _fetch_yt_500_vid(vid):
+    if not _RE.match(r"^[A-Za-z0-9_-]{11}$", str(vid or "")):
+        return None
+
+    # 1. YouTube Music anh vuong goc 600x600
+    if vid in _YTM_THUMB:
+        tu = _fix_url_500(_YTM_THUMB[vid])
+        d = _dl_fast(tu, 400, 1.8)
+        if d:
+            if ("googleusercontent.com" in tu or "ggpht.com" in tu) and d.startswith(b"\xff\xd8"):
+                return d
+            jpg = _crop_500_square(d, "hq43" if "hqdefault" in tu else "maxres")
+            if jpg:
+                return jpg
+
+    # 2. Uu tien maxresdefault.jpg (1280x720 -> cat vuong 720x720 -> 600x600 LANCZOS sac net!)
+    d_max = _dl_fast(f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 6000, 1.2)
+    if d_max and len(d_max) > 6000:
+        jpg = _crop_500_square(d_max, "maxres")
+        if jpg:
+            return jpg
+
+    # 3. Du phong sddefault.jpg (640x480 -> net hon hqdefault gap doi!)
+    d_sd = _dl_fast(f"https://i.ytimg.com/vi/{vid}/sddefault.jpg", 4000, 1.2)
+    if d_sd and len(d_sd) > 4000:
+        jpg = _crop_500_square(d_sd, "hq43")
+        if jpg:
+            return jpg
+
+    # 4. Du phong cuoi cung hqdefault.jpg (480x360)
+    d_hq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 400, 1.5)
+    if d_hq:
+        jpg = _crop_500_square(d_hq, "hq43")
+        if jpg:
+            return jpg
+    return None
+
+def _clean_pl_raw_id(pid):
+    s = str(pid or "").strip()
+    s = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", s)
+    if s.startswith("pl_"):
+        s = s[3:]
+    return s.strip()
+
+def _fetch_yt_playlist_tracks(pid):
+    raw_pl = _clean_pl_raw_id(pid)
+    if not raw_pl:
+        return []
+    now_t = _TM.time()
+    if raw_pl in _YT_PL_TRACKS_CACHE and _YT_PL_TRACKS_CACHE[raw_pl][1] > now_t:
+        return list(_YT_PL_TRACKS_CACHE[raw_pl][0])
+
+    tracks = []
+    seen = set()
+
+    def _push_tr(vid, tit, art, dur_s, thumb_u=""):
+        if not vid or vid in seen or not _RE.match(r"^[A-Za-z0-9_-]{11}$", vid):
+            return
+        seen.add(vid)
+        is_ytm = bool(thumb_u and ("googleusercontent.com" in thumb_u.lower() or "ggpht.com" in thumb_u.lower()))
+        if is_ytm:
+            _YTM_THUMB[vid] = thumb_u
+        sd = _make_song(vid, tit or vid, art or "YouTube", tit or vid, str(dur_s or 240), is_vid=(not is_ytm), thumb_url=(thumb_u if is_ytm else ""))
+        if sd:
+            tracks.append(sd)
+
+    # A. Goi trang YouTube Playlist chinh thuc
+    try:
+        req = _U.Request(
+            f"https://www.youtube.com/playlist?list={raw_pl}&hl=en",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept-Language": "en-US,en;q=0.9"}
+        )
+        with _U.urlopen(req, timeout=4.5, context=_CTX) as r:
+            html = r.read().decode("utf-8", "ignore")
+            m = _RE.search(r"var ytInitialData\s*=\s*(\{.*?\});</script>", html)
+            if m:
+                data = _J.loads(m.group(1))
+                def _walk_pl(node):
+                    if isinstance(node, dict):
+                        if "playlistVideoRenderer" in node:
+                            rv = node["playlistVideoRenderer"]
+                            vid = str(rv.get("videoId") or "")
+                            t_runs = (rv.get("title") or {}).get("runs") or []
+                            tit = "".join(str(x.get("text") or "") for x in t_runs).strip() or str((rv.get("title") or {}).get("simpleText") or "")
+                            b_runs = (rv.get("shortBylineText") or {}).get("runs") or []
+                            art = str(b_runs[0].get("text") or "YouTube").strip() if b_runs else "YouTube"
+                            dur_s = int(rv.get("lengthSeconds") or 0) if str(rv.get("lengthSeconds", "")).isdigit() else 0
+                            if not dur_s:
+                                l_txt = str((rv.get("lengthText") or {}).get("simpleText") or "")
+                                dur_s = _parse_dur_str(l_txt) if l_txt else 240
+                            _push_tr(vid, tit, art, dur_s)
+                        for val in node.values():
+                            _walk_pl(val)
+                    elif isinstance(node, list):
+                        for item in node:
+                            _walk_pl(item)
+                _walk_pl(data)
+    except Exception:
+        pass
+
+    # B. Du phong YouTube Music Browse API (cho cac playlist OLAK / RDCLAK cua YTMusic)
+    if not tracks:
+        try:
+            bid = raw_pl if raw_pl.startswith("VL") else ("VL" + raw_pl)
+            pl_body = _J.dumps({
+                "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": "1.20260101.01.00", "hl": "en", "gl": "US"}},
+                "browseId": bid
+            }).encode("utf-8")
+            req = _U.Request(
+                "https://music.youtube.com/youtubei/v1/browse?prettyPrint=false",
+                data=pl_body,
+                headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "Origin": "https://music.youtube.com"}
+            )
+            with _U.urlopen(req, timeout=4.5, context=_CTX) as r:
+                data = _J.loads(r.read().decode("utf-8", "ignore"))
+                def _walk_ytm_pl(node):
+                    if isinstance(node, dict):
+                        if "musicResponsiveListItemRenderer" in node:
+                            rv = node["musicResponsiveListItemRenderer"]
+                            vid = ""
+                            nav = (((rv.get("overlay") or {}).get("musicItemThumbnailOverlayRenderer") or {}).get("content") or {}).get("musicPlayButtonRenderer", {}).get("playNavigationEndpoint", {})
+                            vid = str((nav.get("watchEndpoint") or {}).get("videoId") or "")
+                            if not vid:
+                                vid = str((rv.get("playlistItemData") or {}).get("videoId") or "")
+                            if vid:
+                                cols = rv.get("flexColumns") or []
+                                tit = ""
+                                art = "YouTube Music"
+                                if len(cols) >= 1:
+                                    r0 = ((cols[0].get("musicResponsiveListItemFlexColumnRenderer") or {}).get("text") or {}).get("runs") or []
+                                    tit = "".join(str(x.get("text") or "") for x in r0).strip()
+                                if len(cols) >= 2:
+                                    r1 = ((cols[1].get("musicResponsiveListItemFlexColumnRenderer") or {}).get("text") or {}).get("runs") or []
+                                    if r1:
+                                        art = str(r1[0].get("text") or "YouTube Music").strip()
+                                thumbs = ((((rv.get("thumbnail") or {}).get("musicThumbnailRenderer") or {}).get("thumbnail") or {}).get("thumbnails") or [])
+                                t_u = str(thumbs[-1].get("url") or "") if thumbs else ""
+                                _push_tr(vid, tit, art, 240, t_u)
+                        for val in node.values():
+                            _walk_ytm_pl(val)
+                    elif isinstance(node, list):
+                        for item in node:
+                            _walk_ytm_pl(item)
+                _walk_ytm_pl(data)
+        except Exception:
+            pass
+
+    if tracks:
+        _YT_PL_TRACKS_CACHE[raw_pl] = (list(tracks), now_t + 1800)
+        # Luu anh bia HD cua bai dau tien cho Playlist
+        if raw_pl not in _PL_THUMB or "hqdefault" in str(_PL_THUMB.get(raw_pl, "")):
+            first_v = tracks[0].get("id")
+            if first_v:
+                _PL_THUMB[raw_pl] = _YTM_THUMB.get(first_v) or f"https://i.ytimg.com/vi/{first_v}/maxresdefault.jpg"
+    return tracks
+
+def _build_yt_playlist_xml(req_id, root_tag="album"):
+    tracks = _fetch_yt_playlist_tracks(req_id)
+    if not tracks:
+        return None
+    raw_pl = _clean_pl_raw_id(req_id)
+    first_s = tracks[0]
+    tit = str(first_s.get("album") or first_s.get("title") or "YouTube Playlist")
+    art = str(first_s.get("artist") or "YouTube")
+    total_dur = sum(int(x.get("duration") or 240) for x in tracks if str(x.get("duration", "")).isdigit())
+    cov = "yt37_trk_" + str(first_s.get("id"))
+    rt = _E.Element("subsonic-response", status="ok")
+    if root_tag == "playlist":
+        el = _E.SubElement(
+            rt, "playlist", id=str(req_id), name=tit, owner="admin", public="true",
+            songCount=str(len(tracks)), duration=str(total_dur),
+            created=_now_iso(), changed=_now_iso(), coverArt=cov
+        )
+        c_tag = "entry"
+    elif root_tag == "directory":
+        el = _E.SubElement(rt, "directory", id=str(req_id), name=tit)
+        c_tag = "child"
+    else:
+        el = _E.SubElement(
+            rt, "album", id=str(req_id), parent="ar_yt", artistId="ar_yt", isDir="true",
+            name=tit, title=tit, album=tit, artist=art, coverArt=cov,
+            songCount=str(len(tracks)), duration=str(total_dur),
+            created=_now_iso(), year="2026"
+        )
+        c_tag = "song"
+    for idx, tr in enumerate(tracks, 1):
+        tc = dict(tr)
+        tc["track"] = str(idx)
+        _E.SubElement(el, c_tag, **tc)
+    return rt
+
+# Nang cap ma coverArt len yt37_ de App tu dong tai lai anh HD 600x600 + Giu nguyen ma pl_ khong bi gan al_pl_
+_orig_fmt_k20_for_k21 = _orig_fmt_k11
+def _patched_fmt_k21(rt, js, cb=None):
+    for x in rt.iter():
+        a = x.attrib
+        sid = str(a.get("id") or "")
+        if sid.startswith("pl_") or sid.startswith("al_pl_"):
+            raw_pl = _clean_pl_raw_id(sid)
+            a["id"] = "pl_" + raw_pl
+            a["albumId"] = "pl_" + raw_pl
+            a["parent"] = "pl_" + raw_pl
+    resp = _orig_fmt_k20_for_k21(rt, js, cb)
+    try:
+        body = resp.body
+        if body and (b"yt36_" in body or b"al_pl_" in body):
+            body = body.replace(b"yt36_", b"yt37_").replace(b"al_pl_", b"pl_")
+            return _R(content=body, status_code=resp.status_code, media_type=resp.media_type, headers=dict(resp.headers))
+    except Exception:
+        pass
+    return resp
+
+_orig_fmt_k11 = _patched_fmt_k21
+
+@app.middleware("http")
+async def _k21_playlist_and_hd_art_mw(req, call_next):
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if not pl.startswith("/rest/"):
+        return await call_next(req)
+
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    qd = dict(qi); fv = qd.get("f", "").lower()
+    js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
+    cb = qd.get("callback") if fv == "jsonp" else None
+    if not _check_auth(qd):
+        return await call_next(req)
+
+    lp = _A.get_running_loop()
+
+    # 1. Neu App bam phat truc tiep 1 [DS Phat] (/stream?id=pl_...) -> Tu dong boc bai hat dau tien trong DS Phat de phat ngay!
+    if "/stream" in pl or "/download" in pl:
+        sid = str(qd.get("id") or "").strip()
+        if sid.startswith("pl_") or sid.startswith("al_pl_"):
+            tracks = await lp.run_in_executor(_REQ_POOL, _fetch_yt_playlist_tracks, sid)
+            if tracks and tracks[0].get("id"):
+                first_vid = tracks[0]["id"]
+                new_qi = [(k, first_vid if k == "id" else v) for k, v in qi]
+                req.scope["query_string"] = _ue(new_qi).encode("utf-8")
+
+    # 2. Mo [DS Phat] duoi dang Album / Playlist / Directory -> Tra ve tron bo bai hat that ben trong DS Phat!
+    if ("/getalbum" in pl and "getalbumlist" not in pl) or ("/getplaylist" in pl and "/getplaylists" not in pl) or "/getmusicdirectory" in pl:
+        aid = str(qd.get("id") or "").strip()
+        if aid.startswith("pl_") or aid.startswith("al_pl_"):
+            r_tag = "playlist" if "/getplaylist" in pl else ("directory" if "/getmusicdirectory" in pl else "album")
+            rt = await lp.run_in_executor(_REQ_POOL, _build_yt_playlist_xml, aid, r_tag)
+            if rt is not None:
+                return _fmt(rt, js, cb)
+
+    return await call_next(req)
+
+_SCACHE.clear()
