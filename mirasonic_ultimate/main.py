@@ -6655,3 +6655,105 @@ async def _k21_playlist_and_hd_art_mw(req, call_next):
     return await call_next(req)
 
 _SCACHE.clear()
+
+
+# --- K22: V1.8.10 BLOCK FAKE "YOUTUBE MUSIC TRACK" GHOST ENTRIES & AUTO-PURGE HISTORY ---
+_GHOST_TITLES = {"", "youtube music track", "youtube track", "unknown", "unknown title"}
+
+def _is_ghost_yt_meta(vid, sd):
+    if not isinstance(sd, dict):
+        return True
+    tit = str(sd.get("title") or "").strip().lower()
+    art = str(sd.get("artist") or "").strip().lower()
+    if tit in _GHOST_TITLES or tit == str(vid or "").strip().lower():
+        return True
+    if art == "youtube music" and ("youtube music track" in tit or len(tit) < 2):
+        return True
+    return False
+
+# 1. Ghi de ham ghi lich su nghe YT: Chan 100% ma playlist (pl_/upl_) va chi nhan dung ma video 11 ky tu chinh xac!
+def _record_u_yt_strict(u, vid):
+    try:
+        raw_in = str(vid or "").strip()
+        if not raw_in or raw_in.startswith("hdd") or "pl_" in raw_in or "upl_" in raw_in or "ar_" in raw_in:
+            return
+        clean_v = _RE.sub(r"^(yt\d*_|al_|trk_)+", "", raw_in)
+        if not _RE.match(r"^[A-Za-z0-9_-]{11}$", clean_v):
+            return
+        v = clean_v
+        _ensure_vid_meta(v)
+        sd = _YL.get(v) or {}
+        if _is_ghost_yt_meta(v, sd):
+            _YL.pop(v, None)
+            return
+        uname = _clean_uname(u)
+        p = _get_u_prof(uname)
+        item_k = f"yt:{v}"
+        now_s = _now_iso()
+        with _USER_PROF_LOCK:
+            rec = p.setdefault("recent", [])
+            if item_k in rec:
+                rec.remove(item_k)
+            rec.insert(0, item_k)
+            del rec[80:]
+            cnts = p.setdefault("counts", {})
+            cnts[item_k] = int(cnts.get(item_k, 0)) + 1
+            p.setdefault("ts", {})[item_k] = now_s
+            p["last_play"] = {
+                "kind": "yt",
+                "source": "yt",
+                "id": v,
+                "title": str(sd.get("title") or ""),
+                "artist": str(sd.get("artist") or ""),
+                "ts": _TM.time()
+            }
+        _save_user_profiles()
+    except Exception:
+        pass
+
+# 2. Loc sach bai ma "YouTube Music Track" truoc khi tra ve danh sach Recently played / Recently added / Most played
+_orig_u_item_k17 = _u_item_to_album_node
+def _u_item_to_album_node(u, item_k):
+    if str(item_k or "").startswith("yt:"):
+        vid = str(item_k)[3:]
+        if not _RE.match(r"^[A-Za-z0-9_-]{11}$", vid):
+            return None
+        sd = _YL.get(vid)
+        if sd is not None and _is_ghost_yt_meta(vid, sd):
+            return None
+    nd = _orig_u_item_k17(u, item_k)
+    if isinstance(nd, dict):
+        t_chk = str(nd.get("title") or nd.get("name") or "").strip().lower()
+        if t_chk in _GHOST_TITLES or "youtube music track" in t_chk:
+            return None
+    return nd
+
+# 3. Tu dong quet va xoa sach cac muc rac "YouTube Music Track" da lo luu trong user_profiles.json ngay khi khoi dong
+try:
+    _purged_cnt = 0
+    for _gk, _gv in list(_YL.items()):
+        if not str(_gk).startswith("hdd") and _is_ghost_yt_meta(_gk, _gv):
+            _YL.pop(_gk, None)
+            _purged_cnt += 1
+    with _USER_PROF_LOCK:
+        for _uk, _up in list(_USER_PROFILES.items()):
+            if not isinstance(_up, dict):
+                continue
+            _bad_keys = set()
+            for _rk in list(_up.get("recent") or []) + list((_up.get("counts") or {}).keys()):
+                if str(_rk).startswith("yt:"):
+                    _v = str(_rk)[3:]
+                    if not _RE.match(r"^[A-Za-z0-9_-]{11}$", _v) or _is_ghost_yt_meta(_v, _YL.get(_v)):
+                        _bad_keys.add(_rk)
+            if _bad_keys:
+                _up["recent"] = [x for x in (_up.get("recent") or []) if x not in _bad_keys]
+                for _bk in _bad_keys:
+                    (_up.get("counts") or {}).pop(_bk, None)
+                    (_up.get("ts") or {}).pop(_bk, None)
+                _purged_cnt += len(_bad_keys)
+    if _purged_cnt > 0:
+        _save_user_profiles()
+except Exception:
+    pass
+
+_SCACHE.clear()
