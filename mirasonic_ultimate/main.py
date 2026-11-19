@@ -5076,6 +5076,10 @@ def _build_user_album_list(u, ltype, sz, off, tag_name):
     al_el = _E.SubElement(rt, tag_name)
     items = []
 
+    if ltype == "random":
+        if "_build_random_hdd_songs_as_albums" in globals():
+            return _build_random_hdd_songs_as_albums(sz, tag_name)
+
     if ltype == "recent":
         for k in list(p.get("recent") or []):
             nd = _u_item_to_album_node(uname, k)
@@ -6169,7 +6173,9 @@ async def _k18_dynamic_radio_and_hdd_mw(req, call_next):
         sz = int(qd.get("size") or 24) if str(qd.get("size", "")).isdigit() else 24
         tg = "albumList2" if "2" in pl else "albumList"
         rt = await lp.run_in_executor(_REQ_POOL, _build_random_hdd_songs_as_albums, sz, tg)
-        return _fmt(rt, js, cb)
+        resp = _fmt(rt, js, cb)
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        return resp
 
     if "getrandomsongs" in pl and not qd.get("genre") and not qd.get("fromYear"):
         cnt = int(qd.get("size") or 20) if str(qd.get("size", "")).isdigit() else 20
