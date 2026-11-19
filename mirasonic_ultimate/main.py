@@ -6249,3 +6249,97 @@ def _patched_fmt_k19(rt, js, cb=None):
 
 _orig_fmt_k11 = _patched_fmt_k19
 _SCACHE.clear()
+
+
+# --- K20: V1.8.8 INSTANT-NEXT ROLLING ARTWORK PREFETCH (NEXT-3 RAM CACHE + ANTI-404) ---
+_NEXT_ART_MAP = {}
+_PREFETCH_ART_POOL = _CF.ThreadPoolExecutor(max_workers=2)
+
+# 1. Noi thoi gian cho tai anh (1.8s) + tu thu lai de bam Next dot ngot khong bi rot 404
+def _fetch_yt_500_vid(vid):
+    if not _RE.match(r"^[A-Za-z0-9_-]{11}$", str(vid or "")):
+        return None
+    if vid in _YTM_THUMB:
+        tu = _fix_url_500(_YTM_THUMB[vid])
+        d = _dl_fast(tu, 300, 1.8)
+        if d:
+            if ("googleusercontent.com" in tu or "ggpht.com" in tu) and d.startswith(b"\xff\xd8"):
+                return d
+            jpg = _crop_500_square(d, "hq43" if "hqdefault" in tu else "square")
+            if jpg:
+                return jpg
+
+    for _attempt in range(2):
+        d_hq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 400, 1.8)
+        if d_hq:
+            jpg = _crop_500_square(d_hq, "hq43")
+            if jpg:
+                return jpg
+
+    d_mq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg", 300, 1.5)
+    if d_mq:
+        return _crop_500_square(d_mq, "maxres")
+    return None
+
+def _prefetch_cids_quiet(cids):
+    for cid in cids:
+        if not cid:
+            continue
+        try:
+            kind, k_id, _ = _norm_art_key(cid)
+            if f"{kind}_{k_id}" not in _ART_RAM:
+                _get_art_600(cid)
+        except Exception:
+            pass
+
+# 2. Ghi nho thu tu bai hat trong Album / Queue / Radio de biet truoc 3 bai ke tiep
+_orig_fmt_k19_for_k20 = _orig_fmt_k11
+def _patched_fmt_k20(rt, js, cb=None):
+    resp = _orig_fmt_k19_for_k20(rt, js, cb)
+    try:
+        seq = []
+        for x in rt.iter():
+            a = x.attrib
+            if x.tag in ("song", "child", "entry") and a.get("isDir") != "true":
+                ca = str(a.get("coverArt") or a.get("id") or "").strip()
+                sid = str(a.get("id") or ca).strip()
+                if ca and sid:
+                    _, k_id, _ = _norm_art_key(sid)
+                    seq.append((k_id, ca))
+        if len(seq) >= 2:
+            for i in range(len(seq) - 1):
+                _NEXT_ART_MAP[seq[i][0]] = [seq[j][1] for j in range(i + 1, min(i + 4, len(seq)))]
+            if len(_NEXT_ART_MAP) > 600:
+                for old_k in list(_NEXT_ART_MAP.keys())[:200]:
+                    _NEXT_ART_MAP.pop(old_k, None)
+        # Nap nhe 3 bai dau tien cua danh sach vua mo vao RAM
+        if seq:
+            _PREFETCH_ART_POOL.submit(_prefetch_cids_quiet, [x[1] for x in seq[:3]])
+    except Exception:
+        pass
+    return resp
+
+_orig_fmt_k11 = _patched_fmt_k20
+
+# 3. Khi bai hien tai phat on dinh duoc 1.0 giay -> Goi dau san anh cua 3 bai ke tiep vao RAM!
+@app.middleware("http")
+async def _k20_next_art_prefetch_mw(req, call_next):
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if pl.startswith("/rest/") and ("/stream" in pl or "/download" in pl):
+        qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+        qd = dict(qi)
+        sid = str(qd.get("id") or "").strip()
+        rng = req.headers.get("range") or req.headers.get("Range") or ""
+        if sid and ((not rng) or rng.startswith("bytes=0-")):
+            try:
+                _, cur_k, _ = _norm_art_key(sid)
+                nxt_list = list(_NEXT_ART_MAP.get(cur_k) or [])
+                if nxt_list:
+                    t_pf = _TH.Timer(1.0, lambda lst=nxt_list: _PREFETCH_ART_POOL.submit(_prefetch_cids_quiet, lst))
+                    t_pf.daemon = True
+                    t_pf.start()
+            except Exception:
+                pass
+    return await call_next(req)
+
+_SCACHE.clear()
