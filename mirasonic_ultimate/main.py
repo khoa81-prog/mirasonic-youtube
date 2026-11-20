@@ -7038,7 +7038,7 @@ def _is_hdd_vietnamese_song(d):
 
 _SCACHE.clear()
 
-# --- K26: V1.8.20 DEDICATED ALBUM COVER ID (yt39_alb_) + FULL CACHE PURGE + ALBUM INFO ---
+# --- K26: V1.8.21 FIX 404 ALBUM COVER (HEAD+GET) & FORCE SQUARE YTM ART FOR ALBUM TRACKS ---
 _REAL_YTM_ALBUM_CACHE = {}
 _REAL_ALBUM_NOTES_CACHE = {}
 _REAL_ALBUM_COVER_URL = {}
@@ -7114,6 +7114,63 @@ def _set_ytm_album_thumb(v_id, thumb_u):
             _K26_ART_REFRESHED.add(v_id)
             _purge_stale_art_id(v_id)
 
+def _dl_square_ytm_jpeg(raw_url):
+    if not raw_url:
+        return None
+    tu = _fix_url_500(raw_url)
+    for cand_u in (tu, str(raw_url).strip()):
+        if not cand_u:
+            continue
+        d = _dl_fast(cand_u, 400, 3.0)
+        if not d:
+            continue
+        if d.startswith(b"\xff\xd8") and len(d) > 400:
+            return d
+        jpg = _crop_500_square(d, "square")
+        if jpg and jpg.startswith(b"\xff\xd8") and len(jpg) > 400:
+            return jpg
+    return None
+
+def _fetch_album_thumb_by_bid(bid):
+    u = _REAL_ALBUM_COVER_URL.get(bid)
+    if u:
+        return u
+    try:
+        data = _ytm_post_json("browse", {
+            "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": "1.20241101.01.00", "hl": "vi", "gl": "VN"}},
+            "browseId": bid
+        }, timeout=4.0)
+        found_u = []
+        def _walk_u(n):
+            if found_u:
+                return
+            if isinstance(n, dict):
+                for hk in ("musicResponsiveHeaderRenderer", "musicDetailHeaderRenderer", "musicVisualHeaderRenderer"):
+                    hd = n.get(hk)
+                    if isinstance(hd, dict):
+                        ths = _dg(hd, "thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails")
+                        if isinstance(ths, list) and ths and isinstance(ths[-1], dict):
+                            u0 = str(ths[-1].get("url") or "")
+                            if u0:
+                                found_u.append(u0)
+                                return
+                for v in n.values():
+                    _walk_u(v)
+            elif isinstance(n, list):
+                for it in n:
+                    _walk_u(it)
+        _walk_u(data)
+        if not found_u:
+            m = _RE.search(r'https://lh3\.googleusercontent\.com/[^"]+', _J.dumps(data))
+            if m:
+                found_u.append(m.group(0))
+        if found_u:
+            _REAL_ALBUM_COVER_URL[bid] = found_u[0]
+            return found_u[0]
+    except Exception:
+        pass
+    return ""
+
 def _get_real_album_cover_bytes(bid):
     ram_k = f"alb_{bid}"
     if ram_k in _ART_RAM:
@@ -7122,23 +7179,14 @@ def _get_real_album_cover_bytes(bid):
     if _OS.path.isfile(fp):
         try:
             d = open(fp, "rb").read()
-            if len(d) > 400:
+            if len(d) > 400 and d.startswith(b"\xff\xd8"):
                 _ART_RAM[ram_k] = d
                 return d
         except Exception:
             pass
-    u = _REAL_ALBUM_COVER_URL.get(bid)
-    if not u:
-        return None
-    tu = _fix_url_500(u)
-    d = _dl_fast(tu, 400, 2.5)
-    if not d:
-        return None
-    if ("googleusercontent.com" in tu or "ggpht.com" in tu) and d.startswith(b"\xff\xd8"):
-        jpg = d
-    else:
-        jpg = _crop_500_square(d, "square") or d
-    if jpg and len(jpg) > 400:
+    u = _fetch_album_thumb_by_bid(bid)
+    jpg = _dl_square_ytm_jpeg(u)
+    if jpg:
         _ART_RAM[ram_k] = jpg
         try:
             open(fp, "wb").write(jpg)
@@ -7146,6 +7194,36 @@ def _get_real_album_cover_bytes(bid):
             pass
         return jpg
     return None
+
+def _get_real_track_square_bytes(vid):
+    ram_k = f"ytm_sq_{vid}"
+    if ram_k in _ART_RAM:
+        return _ART_RAM[ram_k]
+    fp = _OS.path.join(_ART_DIR, f"ytm_sq_{vid}.jpg")
+    if _OS.path.isfile(fp):
+        try:
+            d = open(fp, "rb").read()
+            if len(d) > 400 and d.startswith(b"\xff\xd8"):
+                _ART_RAM[ram_k] = d
+                return d
+        except Exception:
+            pass
+    u = _YTM_THUMB.get(vid) or ""
+    if not u:
+        bid, _ = _find_ytm_album_browse_id(vid)
+        if bid:
+            u = _fetch_album_thumb_by_bid(bid)
+            if u:
+                _YTM_THUMB[vid] = u
+    jpg = _dl_square_ytm_jpeg(u)
+    if jpg:
+        _ART_RAM[ram_k] = jpg
+        try:
+            open(fp, "wb").write(jpg)
+        except Exception:
+            pass
+        return jpg
+    return _fetch_yt_500_vid(vid)
 
 def _find_first_mpreb(node):
     if isinstance(node, dict):
@@ -7324,6 +7402,11 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
 
         _walk_meta(data)
 
+        if not meta["thumb"]:
+            m_lh3 = _RE.search(r'https://lh3\.googleusercontent\.com/[^"]+', _J.dumps(data))
+            if m_lh3:
+                meta["thumb"] = m_lh3.group(0)
+
         seed_sd = _YL.get(vid) or {}
         if not meta["artist"] or meta["artist"].lower() == "youtube music":
             s_art = str(seed_sd.get("artist") or "").strip()
@@ -7362,6 +7445,7 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
                                 sd["artist"] = art
                                 sd["album"] = alb_title
                                 sd["year"] = yr_clean
+                                sd["coverArt"] = "yt39_trk_" + v_id
                                 tracks.append(sd)
                 for v in node.values():
                     _walk_tracks(v)
@@ -7375,14 +7459,10 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
 
         alb_arid = str(tracks[0].get("artistId") or seed_sd.get("artistId") or "ar_ytm")
         total_dur = sum(int(x.get("duration") or 240) for x in tracks if str(x.get("duration", "")).isdigit())
-        first_v = str(tracks[0].get("id") or vid)
 
-        # Luu URL anh bia vuong goc theo ma dia MPREb_ de khong bao gio dinh anh MV cu cua bai so 1!
         if meta["thumb"]:
             _REAL_ALBUM_COVER_URL[bid] = meta["thumb"]
-            alb_cov_id = "yt39_alb_" + bid
-        else:
-            alb_cov_id = "yt37_trk_" + first_v
+        alb_cov_id = "yt39_alb_" + bid
 
         if meta["desc"]:
             _REAL_ALBUM_NOTES_CACHE[str(req_album_id)] = meta["desc"]
@@ -7401,6 +7481,7 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
             tc["album"] = alb_title
             tc["year"] = yr_clean
             tc["track"] = str(idx)
+            tc["coverArt"] = "yt39_trk_" + str(tr.get("id") or vid)
             _E.SubElement(al_el, "song", **tc)
 
         _REAL_YTM_ALBUM_CACHE[vid] = (_E.tostring(rt, encoding="utf-8"), now_t + 3600)
@@ -7471,16 +7552,20 @@ async def _k26_real_album_mw(req, call_next):
         lp = _A.get_running_loop()
         uname = _clean_uname(qd.get("u"))
 
-        # 0. Phuc vu truc tiep anh bia dia goc yt39_alb_<MPREb_...>
+        # 0. Phuc vu truc tiep anh bia dia (yt39_alb_) va anh bai trong dia (yt39_trk_) cho ca GET va HEAD
         if "/getcoverart" in pl:
             cid = str(qd.get("id") or "").strip()
+            jpg = None
             if cid.startswith("yt39_alb_"):
                 bid = cid[9:]
                 jpg = await lp.run_in_executor(_REQ_POOL, _get_real_album_cover_bytes, bid)
-                if jpg:
-                    hdrs = dict(_CORS)
-                    hdrs["Cache-Control"] = "public, max-age=86400"
-                    return _R(content=jpg, media_type="image/jpeg", headers=hdrs)
+            elif cid.startswith("yt39_trk_"):
+                vid = cid[9:]
+                jpg = await lp.run_in_executor(_REQ_POOL, _get_real_track_square_bytes, vid)
+            if jpg:
+                hdrs = dict(_CORS)
+                hdrs["Cache-Control"] = "public, max-age=86400"
+                return _R(content=b"" if req.method == "HEAD" else jpg, media_type="image/jpeg", headers=hdrs)
 
         if ("/getalbum" in pl and "getalbumlist" not in pl and "getalbuminfo" not in pl) or "/getmusicdirectory" in pl:
             aid = str(qd.get("id") or "").strip()
