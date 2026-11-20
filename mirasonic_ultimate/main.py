@@ -4843,21 +4843,29 @@ def _patched_fmt_k16(rt, js, cb=None):
         ca = str(a.get("coverArt") or "")
         if x.tag in ("song", "child", "entry") and a.get("isDir") != "true":
             t_name = str(a.get("title") or a.get("name") or sid)
+            cur_alb = str(a.get("album") or "").strip()
+            p_str = str(a.get("path") or "").strip()
+            if (not cur_alb or cur_alb == t_name) and "/" in p_str:
+                p_parts = [z.strip() for z in p_str.split("/") if z.strip()]
+                if len(p_parts) >= 3 and p_parts[-2].lower() not in ("youtube", "youtube music", "unknown", "unknown album"):
+                    cur_alb = p_parts[-2]
             if sid.startswith("hdd"):
-                alid = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", str(a.get("albumId") or a.get("parent") or ""))
-                rid_clean = _RE.sub(r"^(hdd\d*_|hdd_|al_|al-|mf-)+", "", sid)
-                if alid and rid_clean:
+                alid = _RE.sub(r"^(hdd\d*_|hdd_|realal_|al_|al-|mf-)+", "", str(a.get("albumId") or a.get("parent") or ""))
+                rid_clean = _RE.sub(r"^(hdd\d*_|hdd_|realal_|al_|al-|mf-)+", "", sid)
+                orig_al = _ART_MAP.get(rid_clean) or alid or rid_clean
+                if alid and rid_clean and alid != rid_clean:
                     _ART_MAP[rid_clean] = alid
+                    orig_al = alid
                 a["coverArt"] = "hdd36_trk_" + rid_clean
-                a["albumId"] = "hdd_al_" + rid_clean
-                a["parent"] = "hdd_al_" + rid_clean
-                a["album"] = t_name
+                a["albumId"] = "hdd_realal_" + orig_al
+                a["parent"] = "hdd_realal_" + orig_al
+                a["album"] = cur_alb or t_name
             else:
-                vid_clean = _RE.sub(r"^(yt\d*_|al_)+", "", sid)
+                vid_clean = _RE.sub(r"^(yt\d*_|realalb_|al_)+", "", sid)
                 a["coverArt"] = "yt36_trk_" + vid_clean
-                a["albumId"] = "al_" + vid_clean
-                a["parent"] = "al_" + vid_clean
-                a["album"] = t_name
+                a["albumId"] = "realalb_" + vid_clean
+                a["parent"] = "realalb_" + vid_clean
+                a["album"] = cur_alb or t_name
         elif ca:
             raw_ca = _RE.sub(r"^(hdd\d*_|yt\d*_|trk_)+", "", ca)
             while raw_ca.startswith("al_") and len(raw_ca) >= 14:
@@ -7027,5 +7035,275 @@ def _is_hdd_vietnamese_song(d):
     if _VN_UNACCENTED_KW.search(full_str):
         return True
     return False
+
+_SCACHE.clear()
+
+
+# --- K26: V1.8.15 REAL ALBUM LOOKUP (GO TO ALBUM -> OFFICIAL YTMUSIC / HDD ALBUM + ALBUM INFO) ---
+_REAL_YTM_ALBUM_CACHE = {}
+_REAL_ALBUM_NOTES_CACHE = {}
+
+def _find_ytm_album_browse_id(vid):
+    try:
+        body = _J.dumps({
+            "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": "1.20260101.01.00", "hl": "vi", "gl": "VN"}},
+            "videoId": vid,
+            "isAudioOnly": True
+        }).encode("utf-8")
+        req = _U.Request(
+            "https://music.youtube.com/youtubei/v1/next?prettyPrint=false",
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "Origin": "https://music.youtube.com", "Referer": "https://music.youtube.com/"}
+        )
+        with _U.urlopen(req, timeout=3.5, context=_CTX) as r:
+            data = _J.loads(r.read().decode("utf-8", "ignore"))
+            found = {"bid": "", "year": ""}
+            def _walk(node):
+                if found["bid"]:
+                    return
+                if isinstance(node, dict):
+                    if "playlistPanelVideoRenderer" in node:
+                        pvr = node["playlistPanelVideoRenderer"]
+                        if str(pvr.get("videoId") or "") == vid:
+                            runs = (pvr.get("longBylineText") or {}).get("runs") or []
+                            for rn in runs:
+                                bid = str(((rn.get("navigationEndpoint") or {}).get("browseEndpoint") or {}).get("browseId") or "")
+                                if bid.startswith("MPREb_"):
+                                    found["bid"] = bid
+                                tx = str(rn.get("text") or "").strip()
+                                if _RE.match(r"^(19|20)\d{2}$", tx):
+                                    found["year"] = tx
+                            if found["bid"]:
+                                return
+                    for v in node.values():
+                        _walk(v)
+                elif isinstance(node, list):
+                    for it in node:
+                        _walk(it)
+            _walk(data)
+            return found["bid"], found["year"]
+    except Exception:
+        return "", ""
+
+def _fetch_real_ytm_album_xml(vid, req_album_id):
+    now_t = _TM.time()
+    if vid in _REAL_YTM_ALBUM_CACHE and _REAL_YTM_ALBUM_CACHE[vid][1] > now_t:
+        cached = _REAL_YTM_ALBUM_CACHE[vid][0]
+        if cached is not None:
+            return _E.fromstring(cached)
+
+    bid, yr_hint = _find_ytm_album_browse_id(vid)
+    if not bid:
+        return None
+
+    try:
+        body = _J.dumps({
+            "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": "1.20260101.01.00", "hl": "vi", "gl": "VN"}},
+            "browseId": bid
+        }).encode("utf-8")
+        req = _U.Request(
+            "https://music.youtube.com/youtubei/v1/browse?prettyPrint=false",
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "Origin": "https://music.youtube.com", "Referer": "https://music.youtube.com/"}
+        )
+        with _U.urlopen(req, timeout=4.0, context=_CTX) as r:
+            data = _J.loads(r.read().decode("utf-8", "ignore"))
+    except Exception:
+        return None
+
+    meta = {"title": "", "artist": "", "year": yr_hint or "2026", "desc": "", "thumb": ""}
+    tracks = []
+    seen = set()
+
+    def _walk_alb(node):
+        if isinstance(node, dict):
+            for hk in ("musicResponsiveHeaderRenderer", "musicDetailHeaderRenderer"):
+                if hk in node:
+                    hd = node[hk]
+                    t_runs = (hd.get("title") or {}).get("runs") or []
+                    if t_runs and not meta["title"]:
+                        meta["title"] = "".join(str(x.get("text") or "") for x in t_runs).strip()
+                    for sk in ("straplineTextOne", "subtitle"):
+                        s_runs = (hd.get(sk) or {}).get("runs") or []
+                        for sr in s_runs:
+                            stx = str(sr.get("text") or "").strip()
+                            if _RE.match(r"^(19|20)\d{2}$", stx):
+                                meta["year"] = stx
+                            elif sk == "straplineTextOne" and stx and stx != "•" and not meta["artist"]:
+                                meta["artist"] = stx
+                    d_runs = ((hd.get("description") or {}).get("musicDescriptionShelfRenderer") or {}).get("description", {}).get("runs") or []
+                    if d_runs and not meta["desc"]:
+                        meta["desc"] = "".join(str(x.get("text") or "") for x in d_runs).strip()
+                    ths = (((hd.get("thumbnail") or {}).get("musicThumbnailRenderer") or {}).get("thumbnail") or {}).get("thumbnails") or []
+                    if ths and not meta["thumb"]:
+                        meta["thumb"] = str(ths[-1].get("url") or "")
+
+            if "musicResponsiveListItemRenderer" in node:
+                rv = node["musicResponsiveListItemRenderer"]
+                v_id = str((rv.get("playlistItemData") or {}).get("videoId") or "")
+                if not v_id:
+                    nav = (((rv.get("overlay") or {}).get("musicItemThumbnailOverlayRenderer") or {}).get("content") or {}).get("musicPlayButtonRenderer", {}).get("playNavigationEndpoint", {})
+                    v_id = str((nav.get("watchEndpoint") or {}).get("videoId") or "")
+                if v_id and v_id not in seen and _RE.match(r"^[A-Za-z0-9_-]{11}$", v_id):
+                    cols = rv.get("flexColumns") or []
+                    tit = ""
+                    art = meta["artist"] or "YouTube Music"
+                    if len(cols) >= 1:
+                        r0 = ((cols[0].get("musicResponsiveListItemFlexColumnRenderer") or {}).get("text") or {}).get("runs") or []
+                        tit = "".join(str(x.get("text") or "") for x in r0).strip()
+                    if len(cols) >= 2:
+                        r1 = ((cols[1].get("musicResponsiveListItemFlexColumnRenderer") or {}).get("text") or {}).get("runs") or []
+                        if r1 and str(r1[0].get("text") or "").strip():
+                            cand_a = str(r1[0].get("text") or "").strip()
+                            if not any(w in cand_a.lower() for w in ("lượt phát", "plays", "views")):
+                                art = cand_a
+                    dur_s = 240
+                    fcols = rv.get("fixedColumns") or []
+                    if fcols:
+                        fr = ((fcols[0].get("musicResponsiveListItemFixedColumnRenderer") or {}).get("text") or {}).get("runs") or []
+                        if fr:
+                            dur_s = _parse_dur_str(fr[0].get("text"))
+                    if tit:
+                        seen.add(v_id)
+                        if meta["thumb"] and ("googleusercontent.com" in meta["thumb"].lower() or "ggpht.com" in meta["thumb"].lower()):
+                            _YTM_THUMB[v_id] = meta["thumb"]
+                        sd = _make_song(v_id, tit, art, meta["title"] or tit, str(dur_s), is_vid=False, thumb_url=meta["thumb"])
+                        if sd:
+                            sd["year"] = meta["year"]
+                            tracks.append(sd)
+            for v in node.values():
+                _walk_alb(v)
+        elif isinstance(node, list):
+            for it in node:
+                _walk_alb(it)
+
+    _walk_alb(data)
+    if not tracks:
+        return None
+
+    alb_title = meta["title"] or tracks[0].get("album") or tracks[0].get("title") or "Album"
+    alb_artist = meta["artist"] or tracks[0].get("artist") or "YouTube Music"
+    alb_arid = _artist_id(alb_artist)
+    total_dur = sum(int(x.get("duration") or 240) for x in tracks if str(x.get("duration", "")).isdigit())
+    first_v = tracks[0]["id"]
+
+    if meta["desc"]:
+        _REAL_ALBUM_NOTES_CACHE[str(req_album_id)] = meta["desc"]
+        _REAL_ALBUM_NOTES_CACHE[vid] = meta["desc"]
+
+    rt = _E.Element("subsonic-response", status="ok")
+    al_el = _E.SubElement(
+        rt, "album",
+        id=str(req_album_id), parent=alb_arid, artistId=alb_arid, isDir="true",
+        name=alb_title, title=alb_title, album=alb_title, artist=alb_artist,
+        coverArt="yt37_trk_" + first_v, songCount=str(len(tracks)),
+        duration=str(total_dur), created=f"{meta['year']}-01-01T00:00:00.000Z", year=str(meta["year"])
+    )
+    for idx, tr in enumerate(tracks, 1):
+        tc = dict(tr)
+        tc["album"] = alb_title
+        tc["year"] = str(meta["year"])
+        tc["track"] = str(idx)
+        _E.SubElement(al_el, "song", **tc)
+
+    _REAL_YTM_ALBUM_CACHE[vid] = (_E.tostring(rt, encoding="utf-8"), now_t + 3600)
+    return rt
+
+def _fetch_real_hdd_album_xml(raw_alid, req_album_id):
+    if not _HDD or not raw_alid:
+        return None
+    try:
+        hq = [x for x in _hdd_q([("id", raw_alid)]) if x[0] != "f"]
+        with _U.urlopen(_U.Request(f"{_HDD}/rest/getAlbum.view?{_ue(hq)}", headers={"User-Agent": "Resonus"}), timeout=3.0, context=_CTX) as r:
+            hrt = _E.fromstring(r.read())
+            if hrt.attrib.get("status") != "ok":
+                return None
+            alb_node = None
+            songs = []
+            for x in hrt.iter():
+                if x.tag == "album" and alb_node is None:
+                    alb_node = dict(x.attrib)
+                elif x.tag in ("song", "child", "entry") and x.attrib.get("isDir") != "true" and x.attrib.get("id"):
+                    songs.append(_norm_hdd_song_node(x.attrib))
+            if not songs:
+                return None
+            first_s = songs[0]
+            first_raw = _RE.sub(r"^(hdd\d*_|hdd_)+", "", str(first_s.get("id") or ""))
+            tit = str((alb_node or {}).get("name") or first_s.get("album") or "HDD Album")
+            art = str((alb_node or {}).get("artist") or first_s.get("artist") or "HDD Artist")
+            yr = str((alb_node or {}).get("year") or first_s.get("year") or "2026")
+            total_dur = sum(int(x.get("duration") or 240) for x in songs if str(x.get("duration", "")).isdigit())
+            rt = _E.Element("subsonic-response", status="ok")
+            al_el = _E.SubElement(
+                rt, "album",
+                id=str(req_album_id), parent=str(first_s.get("artistId") or "hdd_ar"),
+                artistId=str(first_s.get("artistId") or "hdd_ar"), isDir="true",
+                name=tit, title=tit, album=tit, artist=art,
+                coverArt="hdd36_trk_" + first_raw, songCount=str(len(songs)),
+                duration=str(total_dur), created=f"{yr}-01-01T00:00:00.000Z", year=yr
+            )
+            for idx, tr in enumerate(songs, 1):
+                tc = dict(tr)
+                tc["album"] = tit
+                tc["track"] = str(tc.get("track") or idx)
+                _E.SubElement(al_el, "song", **tc)
+            return rt
+    except Exception:
+        return None
+
+@app.middleware("http")
+async def _k26_real_album_mw(req, call_next):
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if not pl.startswith("/rest/"):
+        return await call_next(req)
+
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    qd = dict(qi); fv = qd.get("f", "").lower()
+    js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
+    cb = qd.get("callback") if fv == "jsonp" else None
+    if not _check_auth(qd):
+        return await call_next(req)
+
+    lp = _A.get_running_loop()
+    uname = _clean_uname(qd.get("u"))
+
+    # 1. Mo Dia nhac goc khi bam "Go to album" tren Wavio/Substreamer (realalb_ / hdd_realal_)
+    if ("/getalbum" in pl and "getalbumlist" not in pl and "getalbuminfo" not in pl) or "/getmusicdirectory" in pl:
+        aid = str(qd.get("id") or "").strip()
+        if aid.startswith("realalb_"):
+            vid = _RE.sub(r"^realalb_", "", aid)
+            rt = await lp.run_in_executor(_REQ_POOL, _fetch_real_ytm_album_xml, vid, aid)
+            if rt is None:
+                rt = await lp.run_in_executor(_REQ_POOL, _build_endless_yt_album, vid, aid, uname)
+            if "/getmusicdirectory" in pl:
+                for x in rt.iter():
+                    if x.tag == "album": x.tag = "directory"
+                    elif x.tag == "song": x.tag = "child"
+            return _fmt(rt, js, cb)
+
+        if aid.startswith("hdd_realal_"):
+            raw_al = _RE.sub(r"^hdd_realal_", "", aid)
+            rt = await lp.run_in_executor(_REQ_POOL, _fetch_real_hdd_album_xml, raw_al, aid)
+            if rt is None:
+                rt = await lp.run_in_executor(_REQ_POOL, _build_endless_hdd_mix, "hdd_al_" + raw_al, uname)
+            if rt is not None:
+                if "/getmusicdirectory" in pl:
+                    for x in rt.iter():
+                        if x.tag == "album": x.tag = "directory"
+                        elif x.tag == "song": x.tag = "child"
+                return _fmt(rt, js, cb)
+
+    # 2. Tra ve loi gioi thieu Dia nhac (Album notes) cho Wavio qua getAlbumInfo / getAlbumInfo2
+    if "getalbuminfo" in pl:
+        aid = str(qd.get("id") or "").strip()
+        vid_k = _RE.sub(r"^(realalb_|al_|yt\d*_)+", "", aid)
+        notes = _REAL_ALBUM_NOTES_CACHE.get(aid) or _REAL_ALBUM_NOTES_CACHE.get(vid_k) or ""
+        if notes:
+            rt = _E.Element("subsonic-response", status="ok")
+            ai = _E.SubElement(rt, "albumInfo")
+            _E.SubElement(ai, "notes").text = notes
+            return _fmt(rt, js, cb)
+
+    return await call_next(req)
 
 _SCACHE.clear()
