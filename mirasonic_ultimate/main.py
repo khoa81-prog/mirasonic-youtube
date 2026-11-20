@@ -7492,25 +7492,59 @@ except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
 
-# --- K28: V1.8.23 STRIP [YTM] PREFIX ON OUTPUT (KEEP [HDD] & [YT]) ---
+# --- K28: V1.8.24 OUTERMOST MIDDLEWARE TO STRIP [YTM] PREFIX (KEEP [HDD] & [YT]) ---
 _K28_YTM_RE = _RE.compile(r"^\s*\[YTM\]\s*", _RE.I)
-_orig_fmt_k28 = _fmt
+_K28_XML_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[YTM\]\s*', _RE.I)
 
-def _fmt(rt, *args, **kwargs):
+def _k28_clean_json(node):
+    changed = False
+    if isinstance(node, dict):
+        for _k in ("title", "name", "album"):
+            _v = node.get(_k)
+            if isinstance(_v, str) and "[ytm]" in _v.lower():
+                _nv = _K28_YTM_RE.sub("", _v).strip()
+                if _nv:
+                    node[_k] = _nv
+                    changed = True
+        for _val in node.values():
+            if isinstance(_val, (dict, list)):
+                if _k28_clean_json(_val):
+                    changed = True
+    elif isinstance(node, list):
+        for _it in node:
+            if isinstance(_it, (dict, list)):
+                if _k28_clean_json(_it):
+                    changed = True
+    return changed
+
+@app.middleware("http")
+async def _k28_strip_ytm_mw(req, call_next):
+    resp = await call_next(req)
+    p = _RE.sub(r"/+", "/", req.url.path).lower()
+    if not p.startswith("/rest/") or resp.status_code != 200:
+        return resp
+    if any(x in p for x in ("/stream", "/download", "/getcoverart")):
+        return resp
+
     try:
-        if hasattr(rt, "iter"):
-            for _el in rt.iter():
-                _a = getattr(_el, "attrib", None)
-                if not _a:
-                    continue
-                for _k in ("title", "name", "album"):
-                    _v = _a.get(_k)
-                    if _v and "[ytm]" in _v.lower():
-                        _nv = _K28_YTM_RE.sub("", _v).strip()
-                        if _nv:
-                            _a[_k] = _nv
+        body = getattr(resp, "body", b"")
+        if not body or b"[ytm]" not in body.lower():
+            return resp
+        bs = body.lstrip()
+        new_b = None
+        if bs.startswith(b"{"):
+            data = _J.loads(body.decode("utf-8", "ignore"))
+            if _k28_clean_json(data):
+                new_b = _J.dumps(data, ensure_ascii=False).encode("utf-8")
+        elif bs.startswith(b"<"):
+            nb = _K28_XML_RE.sub(rb"\1", body)
+            if nb != body:
+                new_b = nb
+        if new_b is not None:
+            hdrs = {k: v for k, v in resp.headers.items() if k.lower() != "content-length"}
+            return _R(content=new_b, status_code=200, media_type=resp.media_type, headers=hdrs)
     except Exception:
         pass
-    return _orig_fmt_k28(rt, *args, **kwargs)
+    return resp
 
 _SCACHE.clear()
