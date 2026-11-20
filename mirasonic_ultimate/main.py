@@ -7038,9 +7038,10 @@ def _is_hdd_vietnamese_song(d):
 
 _SCACHE.clear()
 
-# --- K26: V1.8.19 TWO-PASS OFFICIAL YTMUSIC ALBUM BUILDER (FIX ARTIST, YTM BADGE & ALBUM COVER) ---
+# --- K26: V1.8.20 DEDICATED ALBUM COVER ID (yt39_alb_) + FULL CACHE PURGE + ALBUM INFO ---
 _REAL_YTM_ALBUM_CACHE = {}
 _REAL_ALBUM_NOTES_CACHE = {}
+_REAL_ALBUM_COVER_URL = {}
 _K26_ART_REFRESHED = set()
 _YTM_ORIGIN = "https:" + "//music.youtube.com"
 
@@ -7085,6 +7086,23 @@ def _pick_valid_artist(runs, fallback):
             return tx
     return fallback
 
+def _purge_stale_art_id(v_id):
+    if not v_id:
+        return
+    for rk in list(_ART_RAM.keys()):
+        if v_id in str(rk):
+            _ART_RAM.pop(rk, None)
+    try:
+        if _OS.path.isdir(_ART_DIR):
+            for fn in _OS.listdir(_ART_DIR):
+                if v_id in fn:
+                    try:
+                        _OS.remove(_OS.path.join(_ART_DIR, fn))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
 def _set_ytm_album_thumb(v_id, thumb_u):
     if not v_id or not thumb_u:
         return
@@ -7094,13 +7112,40 @@ def _set_ytm_album_thumb(v_id, thumb_u):
         _YTM_THUMB[v_id] = thumb_u
         if old_u != thumb_u or v_id not in _K26_ART_REFRESHED:
             _K26_ART_REFRESHED.add(v_id)
-            _ART_RAM.pop(f"yt_{v_id}", None)
-            try:
-                fp = _OS.path.join(_ART_DIR, f"yt_{v_id}.jpg")
-                if _OS.path.isfile(fp):
-                    _OS.remove(fp)
-            except Exception:
-                pass
+            _purge_stale_art_id(v_id)
+
+def _get_real_album_cover_bytes(bid):
+    ram_k = f"alb_{bid}"
+    if ram_k in _ART_RAM:
+        return _ART_RAM[ram_k]
+    fp = _OS.path.join(_ART_DIR, f"alb_{bid}.jpg")
+    if _OS.path.isfile(fp):
+        try:
+            d = open(fp, "rb").read()
+            if len(d) > 400:
+                _ART_RAM[ram_k] = d
+                return d
+        except Exception:
+            pass
+    u = _REAL_ALBUM_COVER_URL.get(bid)
+    if not u:
+        return None
+    tu = _fix_url_500(u)
+    d = _dl_fast(tu, 400, 2.5)
+    if not d:
+        return None
+    if ("googleusercontent.com" in tu or "ggpht.com" in tu) and d.startswith(b"\xff\xd8"):
+        jpg = d
+    else:
+        jpg = _crop_500_square(d, "square") or d
+    if jpg and len(jpg) > 400:
+        _ART_RAM[ram_k] = jpg
+        try:
+            open(fp, "wb").write(jpg)
+        except Exception:
+            pass
+        return jpg
+    return None
 
 def _find_first_mpreb(node):
     if isinstance(node, dict):
@@ -7233,7 +7278,6 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
 
         meta = {"title": "", "artist": "", "year": yr_hint or "2026", "desc": "", "thumb": ""}
 
-        # LUOT 1: Doc tron ven phan Header dia nhac truoc (Ten dia, Ca si, Nam, Mo ta, Anh bia vuong)
         def _walk_meta(node):
             if isinstance(node, dict):
                 for hk in ("musicResponsiveHeaderRenderer", "musicDetailHeaderRenderer", "musicVisualHeaderRenderer"):
@@ -7292,7 +7336,6 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
         alb_artist = str(meta["artist"] or "YouTube Music")
         yr_clean = str(meta["year"]) if _RE.match(r"^(19|20)\d{2}$", str(meta["year"] or "")) else "2026"
 
-        # LUOT 2: Duyet danh sach bai hat khi da co du Ten dia, Ca si va Anh bia vuong chuan!
         tracks = []
         seen = set()
 
@@ -7333,7 +7376,13 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
         alb_arid = str(tracks[0].get("artistId") or seed_sd.get("artistId") or "ar_ytm")
         total_dur = sum(int(x.get("duration") or 240) for x in tracks if str(x.get("duration", "")).isdigit())
         first_v = str(tracks[0].get("id") or vid)
-        _set_ytm_album_thumb(first_v, meta["thumb"])
+
+        # Luu URL anh bia vuong goc theo ma dia MPREb_ de khong bao gio dinh anh MV cu cua bai so 1!
+        if meta["thumb"]:
+            _REAL_ALBUM_COVER_URL[bid] = meta["thumb"]
+            alb_cov_id = "yt39_alb_" + bid
+        else:
+            alb_cov_id = "yt37_trk_" + first_v
 
         if meta["desc"]:
             _REAL_ALBUM_NOTES_CACHE[str(req_album_id)] = meta["desc"]
@@ -7344,7 +7393,7 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
             rt, "album",
             id=str(req_album_id), parent=alb_arid, artistId=alb_arid, isDir="true",
             name=alb_title, title=alb_title, album=alb_title, artist=alb_artist,
-            coverArt="yt38_trk_" + first_v, songCount=str(len(tracks)),
+            coverArt=alb_cov_id, songCount=str(len(tracks)),
             duration=str(total_dur), created=f"{yr_clean}-01-01T00:00:00.000Z", year=yr_clean
         )
         for idx, tr in enumerate(tracks, 1):
@@ -7422,6 +7471,17 @@ async def _k26_real_album_mw(req, call_next):
         lp = _A.get_running_loop()
         uname = _clean_uname(qd.get("u"))
 
+        # 0. Phuc vu truc tiep anh bia dia goc yt39_alb_<MPREb_...>
+        if "/getcoverart" in pl:
+            cid = str(qd.get("id") or "").strip()
+            if cid.startswith("yt39_alb_"):
+                bid = cid[9:]
+                jpg = await lp.run_in_executor(_REQ_POOL, _get_real_album_cover_bytes, bid)
+                if jpg:
+                    hdrs = dict(_CORS)
+                    hdrs["Cache-Control"] = "public, max-age=86400"
+                    return _R(content=jpg, media_type="image/jpeg", headers=hdrs)
+
         if ("/getalbum" in pl and "getalbumlist" not in pl and "getalbuminfo" not in pl) or "/getmusicdirectory" in pl:
             aid = str(qd.get("id") or "").strip()
             if aid.startswith("realalb_"):
@@ -7452,6 +7512,9 @@ async def _k26_real_album_mw(req, call_next):
             aid = str(qd.get("id") or "").strip()
             vid_k = _RE.sub(r"^(realalb_|al_|yt\d*_)+", "", aid)
             notes = _REAL_ALBUM_NOTES_CACHE.get(aid) or _REAL_ALBUM_NOTES_CACHE.get(vid_k) or ""
+            if not notes and _RE.match(r"^[A-Za-z0-9_-]{11}$", vid_k):
+                await lp.run_in_executor(_REQ_POOL, _fetch_real_ytm_album_xml, vid_k, aid or ("realalb_" + vid_k))
+                notes = _REAL_ALBUM_NOTES_CACHE.get(aid) or _REAL_ALBUM_NOTES_CACHE.get(vid_k) or ""
             if notes:
                 rt = _E.Element("subsonic-response", status="ok")
                 ai = _E.SubElement(rt, "albumInfo")
