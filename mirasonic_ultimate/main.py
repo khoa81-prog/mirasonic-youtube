@@ -7490,3 +7490,27 @@ try:
         print(f"[K27] Da xoa sach {_del_n} file cover cache cu tren may chu!", flush=True)
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
+
+
+# --- K28: V1.8.23 STRIP [YTM] PREFIX ON OUTPUT (KEEP [HDD] & [YT]) ---
+_K28_YTM_RE = _RE.compile(r"^\s*\[YTM\]\s*", _RE.I)
+_orig_fmt_k28 = _fmt
+
+def _fmt(rt, *args, **kwargs):
+    try:
+        if hasattr(rt, "iter"):
+            for _el in rt.iter():
+                _a = getattr(_el, "attrib", None)
+                if not _a:
+                    continue
+                for _k in ("title", "name", "album"):
+                    _v = _a.get(_k)
+                    if _v and "[ytm]" in _v.lower():
+                        _nv = _K28_YTM_RE.sub("", _v).strip()
+                        if _nv:
+                            _a[_k] = _nv
+    except Exception:
+        pass
+    return _orig_fmt_k28(rt, *args, **kwargs)
+
+_SCACHE.clear()
