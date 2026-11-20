@@ -7038,7 +7038,7 @@ def _is_hdd_vietnamese_song(d):
 
 _SCACHE.clear()
 
-# --- K26: V1.8.17 ACCURATE OFFICIAL YTMUSIC ALBUM LOOKUP (RDAMVM + MENU + SEARCH FALLBACK) ---
+# --- K26: V1.8.18 ACCURATE OFFICIAL YTMUSIC ALBUM LOOKUP (RDAMVM + MENU + SEARCH FALLBACK) ---
 _REAL_YTM_ALBUM_CACHE = {}
 _REAL_ALBUM_NOTES_CACHE = {}
 _YTM_ORIGIN = "https:" + "//music.youtube.com"
@@ -7254,7 +7254,7 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
 
         alb_title = str(meta["title"] or tracks[0].get("album") or tracks[0].get("title") or "Album")
         alb_artist = str(meta["artist"] or tracks[0].get("artist") or "YouTube Music")
-        alb_arid = str(_artist_id(alb_artist))
+        alb_arid = str(tracks[0].get("artistId") or "ar_ytm")
         yr_clean = str(meta["year"]) if _RE.match(r"^(19|20)\d{2}$", str(meta["year"] or "")) else "2026"
         total_dur = sum(int(x.get("duration") or 240) for x in tracks if str(x.get("duration", "")).isdigit())
         first_v = str(tracks[0].get("id") or vid)
