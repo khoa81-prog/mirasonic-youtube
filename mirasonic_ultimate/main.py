@@ -7038,10 +7038,18 @@ def _is_hdd_vietnamese_song(d):
 
 _SCACHE.clear()
 
-# --- K26: V1.8.18 ACCURATE OFFICIAL YTMUSIC ALBUM LOOKUP (RDAMVM + MENU + SEARCH FALLBACK) ---
+# --- K26: V1.8.19 TWO-PASS OFFICIAL YTMUSIC ALBUM BUILDER (FIX ARTIST, YTM BADGE & ALBUM COVER) ---
 _REAL_YTM_ALBUM_CACHE = {}
 _REAL_ALBUM_NOTES_CACHE = {}
+_K26_ART_REFRESHED = set()
 _YTM_ORIGIN = "https:" + "//music.youtube.com"
+
+_orig_norm_art_k26 = _norm_art_key
+def _norm_art_key(cid):
+    s = str(cid or "").strip()
+    if s.startswith("yt38_"):
+        s = "yt37_" + s[5:]
+    return _orig_norm_art_k26(s)
 
 def _dg(obj, *keys):
     cur = obj
@@ -7058,6 +7066,41 @@ def _runs_text(runs):
     if not isinstance(runs, list):
         return ""
     return "".join(str(x.get("text") or "") for x in runs if isinstance(x, dict)).strip()
+
+def _pick_valid_artist(runs, fallback):
+    if isinstance(runs, list):
+        for rn in runs:
+            if not isinstance(rn, dict):
+                continue
+            tx = str(rn.get("text") or "").strip()
+            tl = tx.lower()
+            if not tx or tx in ("•", "-", "|", ",", "&"):
+                continue
+            if _RE.match(r"^(19|20)\d{2}$", tl):
+                continue
+            if _RE.match(r"^\d+[:\.,]?\d*\s*(tr|k|m|b)?$", tl):
+                continue
+            if any(w in tl for w in ("lượt phát", "lượt xem", "plays", "views", "đĩa nhạc", "album", "ep", "single", "bài hát", "song", "youtube music")):
+                continue
+            return tx
+    return fallback
+
+def _set_ytm_album_thumb(v_id, thumb_u):
+    if not v_id or not thumb_u:
+        return
+    tl = str(thumb_u).lower()
+    if "googleusercontent.com" in tl or "ggpht.com" in tl:
+        old_u = _YTM_THUMB.get(v_id)
+        _YTM_THUMB[v_id] = thumb_u
+        if old_u != thumb_u or v_id not in _K26_ART_REFRESHED:
+            _K26_ART_REFRESHED.add(v_id)
+            _ART_RAM.pop(f"yt_{v_id}", None)
+            try:
+                fp = _OS.path.join(_ART_DIR, f"yt_{v_id}.jpg")
+                if _OS.path.isfile(fp):
+                    _OS.remove(fp)
+            except Exception:
+                pass
 
 def _find_first_mpreb(node):
     if isinstance(node, dict):
@@ -7189,26 +7232,28 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
         }, timeout=4.2)
 
         meta = {"title": "", "artist": "", "year": yr_hint or "2026", "desc": "", "thumb": ""}
-        tracks = []
-        seen = set()
 
-        def _walk_alb(node):
+        # LUOT 1: Doc tron ven phan Header dia nhac truoc (Ten dia, Ca si, Nam, Mo ta, Anh bia vuong)
+        def _walk_meta(node):
             if isinstance(node, dict):
-                for hk in ("musicResponsiveHeaderRenderer", "musicDetailHeaderRenderer"):
+                for hk in ("musicResponsiveHeaderRenderer", "musicDetailHeaderRenderer", "musicVisualHeaderRenderer"):
                     hd = node.get(hk)
                     if isinstance(hd, dict):
                         t_txt = _runs_text(_dg(hd, "title", "runs"))
                         if t_txt and not meta["title"]:
                             meta["title"] = t_txt
+                        if not meta["artist"]:
+                            cand = _pick_valid_artist(_dg(hd, "straplineTextOne", "runs"), "")
+                            if not cand:
+                                cand = _pick_valid_artist(_dg(hd, "subtitle", "runs"), "")
+                            if cand:
+                                meta["artist"] = cand
                         for sk in ("straplineTextOne", "subtitle"):
                             for sr in (_dg(hd, sk, "runs") or []):
-                                if not isinstance(sr, dict):
-                                    continue
-                                stx = str(sr.get("text") or "").strip()
-                                if _RE.match(r"^(19|20)\d{2}$", stx):
-                                    meta["year"] = stx
-                                elif sk == "straplineTextOne" and stx and stx != "•" and not meta["artist"]:
-                                    meta["artist"] = stx
+                                if isinstance(sr, dict):
+                                    stx = str(sr.get("text") or "").strip()
+                                    if _RE.match(r"^(19|20)\d{2}$", stx):
+                                        meta["year"] = stx
                         d_txt = _runs_text(_dg(hd, "description", "musicDescriptionShelfRenderer", "description", "runs"))
                         if d_txt and not meta["desc"]:
                             meta["desc"] = d_txt
@@ -7216,6 +7261,43 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
                         if isinstance(ths, list) and ths and isinstance(ths[-1], dict) and not meta["thumb"]:
                             meta["thumb"] = str(ths[-1].get("url") or "")
 
+                mf = node.get("microformatDataRenderer")
+                if isinstance(mf, dict):
+                    if not meta["thumb"]:
+                        mths = _dg(mf, "thumbnail", "thumbnails")
+                        if isinstance(mths, list) and mths and isinstance(mths[-1], dict):
+                            u_m = str(mths[-1].get("url") or "")
+                            if "googleusercontent.com" in u_m.lower() or "ggpht.com" in u_m.lower():
+                                meta["thumb"] = u_m
+                    if not meta["desc"] and mf.get("description"):
+                        meta["desc"] = str(mf.get("description") or "").strip()
+
+                for v in node.values():
+                    _walk_meta(v)
+            elif isinstance(node, list):
+                for it in node:
+                    _walk_meta(it)
+
+        _walk_meta(data)
+
+        seed_sd = _YL.get(vid) or {}
+        if not meta["artist"] or meta["artist"].lower() == "youtube music":
+            s_art = str(seed_sd.get("artist") or "").strip()
+            if s_art and s_art.lower() != "youtube music":
+                meta["artist"] = s_art
+        if not meta["thumb"] and vid in _YTM_THUMB:
+            meta["thumb"] = str(_YTM_THUMB.get(vid) or "")
+
+        alb_title = str(meta["title"] or seed_sd.get("album") or seed_sd.get("title") or "Album")
+        alb_artist = str(meta["artist"] or "YouTube Music")
+        yr_clean = str(meta["year"]) if _RE.match(r"^(19|20)\d{2}$", str(meta["year"] or "")) else "2026"
+
+        # LUOT 2: Duyet danh sach bai hat khi da co du Ten dia, Ca si va Anh bia vuong chuan!
+        tracks = []
+        seen = set()
+
+        def _walk_tracks(node):
+            if isinstance(node, dict):
                 rv = node.get("musicResponsiveListItemRenderer")
                 if isinstance(rv, dict):
                     v_id = str(_dg(rv, "playlistItemData", "videoId") or "")
@@ -7223,41 +7305,35 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
                         v_id = _find_first_watch_vid(rv)
                     if v_id and v_id not in seen and _RE.match(r"^[A-Za-z0-9_-]{11}$", v_id):
                         tit = _runs_text(_dg(rv, "flexColumns", 0, "musicResponsiveListItemFlexColumnRenderer", "text", "runs"))
-                        art = meta["artist"] or "YouTube Music"
                         r1 = _dg(rv, "flexColumns", 1, "musicResponsiveListItemFlexColumnRenderer", "text", "runs")
-                        if isinstance(r1, list) and r1 and isinstance(r1[0], dict):
-                            cand_a = str(r1[0].get("text") or "").strip()
-                            if cand_a and not any(w in cand_a.lower() for w in ("lượt phát", "plays", "views")):
-                                art = cand_a
+                        art = _pick_valid_artist(r1, alb_artist)
                         dur_s = 240
                         fr = _dg(rv, "fixedColumns", 0, "musicResponsiveListItemFixedColumnRenderer", "text", "runs")
                         if isinstance(fr, list) and fr and isinstance(fr[0], dict):
                             dur_s = _parse_dur_str(fr[0].get("text"))
                         if tit:
                             seen.add(v_id)
-                            if meta["thumb"] and ("googleusercontent.com" in meta["thumb"].lower() or "ggpht.com" in meta["thumb"].lower()):
-                                _YTM_THUMB[v_id] = meta["thumb"]
-                            sd = _make_song(v_id, tit, art, meta["title"] or tit, str(dur_s), is_vid=False, thumb_url=meta["thumb"])
+                            _set_ytm_album_thumb(v_id, meta["thumb"])
+                            sd = _make_song(v_id, tit, art, alb_title, str(dur_s), is_vid=False, thumb_url=meta["thumb"])
                             if isinstance(sd, dict):
-                                sd["year"] = str(meta["year"] or "2026")
+                                sd["artist"] = art
+                                sd["album"] = alb_title
+                                sd["year"] = yr_clean
                                 tracks.append(sd)
-
                 for v in node.values():
-                    _walk_alb(v)
+                    _walk_tracks(v)
             elif isinstance(node, list):
                 for it in node:
-                    _walk_alb(it)
+                    _walk_tracks(it)
 
-        _walk_alb(data)
+        _walk_tracks(data)
         if not tracks:
             return None
 
-        alb_title = str(meta["title"] or tracks[0].get("album") or tracks[0].get("title") or "Album")
-        alb_artist = str(meta["artist"] or tracks[0].get("artist") or "YouTube Music")
-        alb_arid = str(tracks[0].get("artistId") or "ar_ytm")
-        yr_clean = str(meta["year"]) if _RE.match(r"^(19|20)\d{2}$", str(meta["year"] or "")) else "2026"
+        alb_arid = str(tracks[0].get("artistId") or seed_sd.get("artistId") or "ar_ytm")
         total_dur = sum(int(x.get("duration") or 240) for x in tracks if str(x.get("duration", "")).isdigit())
         first_v = str(tracks[0].get("id") or vid)
+        _set_ytm_album_thumb(first_v, meta["thumb"])
 
         if meta["desc"]:
             _REAL_ALBUM_NOTES_CACHE[str(req_album_id)] = meta["desc"]
@@ -7268,7 +7344,7 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
             rt, "album",
             id=str(req_album_id), parent=alb_arid, artistId=alb_arid, isDir="true",
             name=alb_title, title=alb_title, album=alb_title, artist=alb_artist,
-            coverArt="yt37_trk_" + first_v, songCount=str(len(tracks)),
+            coverArt="yt38_trk_" + first_v, songCount=str(len(tracks)),
             duration=str(total_dur), created=f"{yr_clean}-01-01T00:00:00.000Z", year=yr_clean
         )
         for idx, tr in enumerate(tracks, 1):
