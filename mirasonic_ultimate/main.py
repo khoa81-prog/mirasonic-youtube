@@ -6790,3 +6790,110 @@ async def _k23_private_nocache_guard_mw(req, call_next):
     return resp
 
 _SCACHE.clear()
+
+
+# --- K24: V1.8.12 STRICT SUBSONIC JSON TYPING FOR NAVIC (FIX folder: "1" -> [1]) ---
+try:
+    _LSTS = set(_LSTS) | {
+        "folder", "musicFolder", "index", "artist", "album", "song", "child",
+        "entry", "playlist", "genre", "openSubsonicExtensions", "versions", "bookmark"
+    }
+    _INTS = set(_INTS) | {
+        "maxBitRate", "size", "duration", "bitRate", "track", "discNumber", "year",
+        "playCount", "songCount", "albumCount", "offset", "start",
+        "samplingRate", "bitDepth", "channelCount", "userRating", "position"
+    }
+except Exception:
+    pass
+
+_K24_EMPTY_OBJ_TAGS = {
+    "albumList", "albumList2", "starred", "starred2", "playlists",
+    "artists", "indexes", "genres", "nowPlaying", "playQueue",
+    "bookmarks", "musicFolders", "randomSongs", "similarSongs",
+    "similarSongs2", "topSongs", "searchResult2", "searchResult3"
+}
+
+_orig_x2d_k24 = _x2d
+def _x2d(e, d=0):
+    res = _orig_x2d_k24(e, d)
+    tag = getattr(e, "tag", "")
+    if res == "" and tag in _K24_EMPTY_OBJ_TAGS:
+        return {}
+    if res == "" and tag == "openSubsonicExtensions":
+        return []
+    if tag == "user" and isinstance(res, dict):
+        fv = res.get("folder")
+        if fv is None:
+            res["folder"] = [1]
+        elif isinstance(fv, list):
+            res["folder"] = [int(x) for x in fv if str(x).strip().isdigit()] or [1]
+        else:
+            res["folder"] = [int(fv)] if str(fv).strip().isdigit() else [1]
+        if "maxBitRate" in res and not isinstance(res["maxBitRate"], int):
+            res["maxBitRate"] = int(res["maxBitRate"]) if str(res["maxBitRate"]).strip().isdigit() else 0
+    return res
+
+@app.middleware("http")
+async def _k24_navic_compat_mw(req, call_next):
+    p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
+    if not pl.startswith("/rest/"):
+        return await call_next(req)
+
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    qd = dict(qi)
+    fv = qd.get("f", "").lower()
+    js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
+    cb = qd.get("callback") if fv == "jsonp" else None
+    if not _check_auth(qd):
+        return await call_next(req)
+
+    # Tra ve dung cau truc JSON chuan cho getUser de Navic (kotlinx.serialization) dang nhap muot ma
+    if "/getuser" in pl and "/getusers" not in pl and js:
+        uname = str(qd.get("username") or qd.get("u") or "admin").strip()
+        payload = {
+            "subsonic-response": {
+                "status": "ok",
+                "version": "1.16.1",
+                "type": "subsonic",
+                "serverVersion": "1.16.1",
+                "openSubsonic": True,
+                "user": {
+                    "username": uname,
+                    "scrobblingEnabled": True,
+                    "maxBitRate": 0,
+                    "adminRole": uname.lower() == "admin",
+                    "settingsRole": True,
+                    "downloadRole": True,
+                    "uploadRole": False,
+                    "playlistRole": True,
+                    "coverArtRole": True,
+                    "commentRole": True,
+                    "podcastRole": True,
+                    "streamRole": True,
+                    "jukeboxRole": False,
+                    "shareRole": True,
+                    "videoConversionRole": False,
+                    "folder": [1]
+                }
+            }
+        }
+        b = _J.dumps(payload)
+        return _R(content=f"{cb}({b});" if cb else b, media_type="application/json; charset=utf-8", headers=_CORS)
+
+    if "getopensubsonicextensions" in pl and js:
+        payload = {
+            "subsonic-response": {
+                "status": "ok",
+                "version": "1.16.1",
+                "type": "subsonic",
+                "serverVersion": "1.16.1",
+                "openSubsonic": True,
+                "openSubsonicExtensions": []
+            }
+        }
+        b = _J.dumps(payload)
+        return _R(content=f"{cb}({b});" if cb else b, media_type="application/json; charset=utf-8", headers=_CORS)
+
+    return await call_next(req)
+
+_SCACHE.clear()
