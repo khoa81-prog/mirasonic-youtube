@@ -6792,7 +6792,7 @@ async def _k23_private_nocache_guard_mw(req, call_next):
 _SCACHE.clear()
 
 
-# --- K24: V1.8.12 STRICT SUBSONIC JSON TYPING FOR NAVIC (FIX folder: "1" -> [1]) ---
+# --- K24: V1.8.13 NAVIC FULL COMPAT (USER JSON, 20-SONG ALBUM SYNC & ORIGINAL M4A STREAM) ---
 try:
     _LSTS = set(_LSTS) | {
         "folder", "musicFolder", "index", "artist", "album", "song", "child",
@@ -6833,6 +6833,66 @@ def _x2d(e, d=0):
             res["maxBitRate"] = int(res["maxBitRate"]) if str(res["maxBitRate"]).strip().isdigit() else 0
     return res
 
+def _is_navic_client(req, qd):
+    c_val = str(qd.get("c") or "").lower()
+    ua_val = str(req.headers.get("user-agent") or "").lower()
+    return ("navic" in c_val) or ("navic" in ua_val) or ("ktor" in ua_val) or ("zt64" in ua_val)
+
+def _k24_patch_navic_json(data):
+    sr = data.get("subsonic-response")
+    if not isinstance(sr, dict):
+        return False
+    changed = False
+
+    # 1. Dong bo albumId cua tat ca 20 bai ve dung id cua Album dang mo de Navic (Room SQLite) hien du 20 bai
+    alb = sr.get("album")
+    if isinstance(alb, dict) and alb.get("id"):
+        al_id = alb["id"]
+        songs = alb.get("song")
+        if isinstance(songs, list):
+            for s in songs:
+                if isinstance(s, dict):
+                    s["albumId"] = al_id
+                    s["parent"] = al_id
+                    changed = True
+
+    d_obj = sr.get("directory")
+    if isinstance(d_obj, dict) and d_obj.get("id"):
+        d_id = d_obj["id"]
+        children = d_obj.get("child")
+        if isinstance(children, list):
+            for s in children:
+                if isinstance(s, dict) and not s.get("isDir"):
+                    s["albumId"] = d_id
+                    s["parent"] = d_id
+                    changed = True
+
+    # 2. Chuan hoa dinh dang M4A (audio/mp4) cho nhac YouTube/YTM tren Navic, bo transcodedSuffix MP3
+    def _walk_fix_m4a(node):
+        nonlocal changed
+        if isinstance(node, dict):
+            sid = str(node.get("id") or "")
+            if sid and not node.get("isDir") and ("suffix" in node or "contentType" in node):
+                if not sid.startswith("hdd"):
+                    if node.get("suffix") != "m4a" or node.get("contentType") != "audio/mp4":
+                        node["suffix"] = "m4a"
+                        node["contentType"] = "audio/mp4"
+                        changed = True
+                    if "transcodedSuffix" in node or "transcodedContentType" in node:
+                        node.pop("transcodedSuffix", None)
+                        node.pop("transcodedContentType", None)
+                        changed = True
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    _walk_fix_m4a(v)
+        elif isinstance(node, list):
+            for it in node:
+                if isinstance(it, (dict, list)):
+                    _walk_fix_m4a(it)
+
+    _walk_fix_m4a(sr)
+    return changed
+
 @app.middleware("http")
 async def _k24_navic_compat_mw(req, call_next):
     p = _RE.sub(r"/+", "/", req.url.path); pl = p.lower()
@@ -6847,7 +6907,16 @@ async def _k24_navic_compat_mw(req, call_next):
     if not _check_auth(qd):
         return await call_next(req)
 
-    # Tra ve dung cau truc JSON chuan cho getUser de Navic (kotlinx.serialization) dang nhap muot ma
+    is_navic = _is_navic_client(req, qd)
+
+    # 1. Chan Navic ep chuyen ma sang MP3 khi phat nhac -> Giu nguyen goc M4A 256kbps / FLAC
+    if is_navic and ("/stream" in pl or "/download" in pl):
+        if str(qd.get("format") or "").lower() == "mp3" or qd.get("maxBitRate"):
+            new_qi = [(k, v) for k, v in qi if k not in ("format", "maxBitRate")]
+            new_qi.append(("format", "raw"))
+            req.scope["query_string"] = _ue(new_qi).encode("utf-8")
+
+    # 2. Tra ve JSON chuan cho getUser & getOpenSubsonicExtensions
     if "/getuser" in pl and "/getusers" not in pl and js:
         uname = str(qd.get("username") or qd.get("u") or "admin").strip()
         payload = {
@@ -6894,6 +6963,21 @@ async def _k24_navic_compat_mw(req, call_next):
         b = _J.dumps(payload)
         return _R(content=f"{cb}({b});" if cb else b, media_type="application/json; charset=utf-8", headers=_CORS)
 
-    return await call_next(req)
+    resp = await call_next(req)
+
+    # 3. Hau xu ly rieng JSON tra ve cho Navic (Hien du 20 bai trong Album + Dung nhan M4A)
+    if is_navic and js and resp.status_code == 200 and not cb:
+        try:
+            body = getattr(resp, "body", b"")
+            if body and body.lstrip().startswith(b"{"):
+                data = _J.loads(body.decode("utf-8", "ignore"))
+                if _k24_patch_navic_json(data):
+                    new_b = _J.dumps(data).encode("utf-8")
+                    hdrs = {k: v for k, v in resp.headers.items() if k.lower() != "content-length"}
+                    return _R(content=new_b, status_code=200, media_type="application/json; charset=utf-8", headers=hdrs)
+        except Exception:
+            pass
+
+    return resp
 
 _SCACHE.clear()
