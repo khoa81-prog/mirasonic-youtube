@@ -7492,9 +7492,10 @@ except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
 
-# --- K28: V1.8.24 OUTERMOST MIDDLEWARE TO STRIP [YTM] PREFIX (KEEP [HDD] & [YT]) ---
+# --- K28: V1.8.25 STREAM-AWARE MIDDLEWARE TO STRIP [YTM] PREFIX (KEEP [HDD] & [YT]) ---
 _K28_YTM_RE = _RE.compile(r"^\s*\[YTM\]\s*", _RE.I)
 _K28_XML_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[YTM\]\s*', _RE.I)
+_K28_JSONP_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[YTM\]\s*', _RE.I)
 
 def _k28_clean_json(node):
     changed = False
@@ -7521,30 +7522,47 @@ def _k28_clean_json(node):
 async def _k28_strip_ytm_mw(req, call_next):
     resp = await call_next(req)
     p = _RE.sub(r"/+", "/", req.url.path).lower()
-    if not p.startswith("/rest/") or resp.status_code != 200:
+    if not p.startswith("/rest/") or resp.status_code != 200 or req.method == "HEAD":
         return resp
-    if any(x in p for x in ("/stream", "/download", "/getcoverart")):
+    if any(x in p for x in ("/stream", "/download", "/getcoverart", "/getavatar", "/hls")):
+        return resp
+    ct = (resp.headers.get("content-type") or "").lower()
+    if ct and not any(t in ct for t in ("json", "xml", "javascript", "text")):
         return resp
 
+    consumed = False
+    body = getattr(resp, "body", None)
+    if body is None and hasattr(resp, "body_iterator"):
+        chunks = []
+        async for chunk in resp.body_iterator:
+            chunks.append(chunk)
+        body = b"".join(chunks)
+        consumed = True
+
+    if not body:
+        if consumed:
+            hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
+            return _R(content=b"", status_code=resp.status_code, media_type=resp.headers.get("content-type") or resp.media_type, headers=hdrs)
+        return resp
+
+    out_b = body
     try:
-        body = getattr(resp, "body", b"")
-        if not body or b"[ytm]" not in body.lower():
-            return resp
-        bs = body.lstrip()
-        new_b = None
-        if bs.startswith(b"{"):
-            data = _J.loads(body.decode("utf-8", "ignore"))
-            if _k28_clean_json(data):
-                new_b = _J.dumps(data, ensure_ascii=False).encode("utf-8")
-        elif bs.startswith(b"<"):
-            nb = _K28_XML_RE.sub(rb"\1", body)
-            if nb != body:
-                new_b = nb
-        if new_b is not None:
-            hdrs = {k: v for k, v in resp.headers.items() if k.lower() != "content-length"}
-            return _R(content=new_b, status_code=200, media_type=resp.media_type, headers=hdrs)
+        if b"[ytm]" in body.lower():
+            bs = body.lstrip()
+            if bs.startswith(b"{"):
+                data = _J.loads(body.decode("utf-8", "ignore"))
+                if _k28_clean_json(data):
+                    out_b = _J.dumps(data, ensure_ascii=False).encode("utf-8")
+            elif bs.startswith(b"<"):
+                out_b = _K28_XML_RE.sub(rb"\1", body)
+            else:
+                out_b = _K28_JSONP_RE.sub(rb"\1", body)
     except Exception:
-        pass
+        out_b = body
+
+    if consumed or out_b != body:
+        hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
+        return _R(content=out_b, status_code=resp.status_code, media_type=resp.headers.get("content-type") or resp.media_type, headers=hdrs)
     return resp
 
 _SCACHE.clear()
