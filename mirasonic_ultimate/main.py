@@ -6981,3 +6981,51 @@ async def _k24_navic_compat_mw(req, call_next):
     return resp
 
 _SCACHE.clear()
+
+
+# --- K25: V1.8.14 STRICT VIETNAMESE DETECTOR (BLOCK FRENCH/EURO ACCENTS LIKE CÉLINE DION) ---
+_VN_EXCLUSIVE_RE = _RE.compile(
+    r"[ăắằẳẵặấầẩẫậếềểễệơớờởỡợưứừửữựđạảẹẻẽịỉĩọỏụủũỳýỵỷỹ"
+    r"ĂẮẰẲẴẶẤẦẨẪẬẾỀỂỄỆƠỚỜỞỠỢƯỨỪỬỮỰĐẠẢẸẺẼỊỈĨỌỎỤỦŨỲÝỴỶỸ]"
+)
+_EURO_SHARED_ACCENT_RE = _RE.compile(r"[àáèéìíòóùúâêôÀÁÈÉÌÍÒÓÙÚÂÊÔ]")
+
+_VN_BASIC_WORDS_RE = _RE.compile(
+    r"\b(mùa|tình|khúc|vàng|lá|mưa|buồn|nhớ|khóc|ngày|anh|em|yêu|cho|trong|về|xa|"
+    r"tim|hồn|sầu|mộng|phố|trăng|hoa|xuân|thu|đông|nhạc|việt|hát|ca|sĩ|cô|nàng|chàng|"
+    r"quê|gió|mây|sông|núi|bến|lòng|duyên|kiếp|tơ|bay|tàn|phai|xưa|nhau|nào|bao|nếu|"
+    r"khi|dù|thôi|nhé|nha|của|và|là|có|mà|từ|trên|bên|ngoài|sau|này|kia|thì|quá|nhiều)\b",
+    _RE.I
+)
+
+_FOREIGN_ACCENT_ARTIST_RE = _RE.compile(
+    r"\b(céline\s*dion|celine\s*dion|andré\s*rieu|andre\s*rieu|beyoncé|beyonce|"
+    r"josé\s*feliciano|lara\s*fabian|mylène\s*farmer|alizée|julio\s*iglesias|"
+    r"enrique\s*iglesias|luis\s*miguel|andrea\s*bocelli|tiësto|mötley\s*crüe|"
+    r"björk|sigur\s*rós|röyksopp|bésame\s*mucho|corazón|café\s*del\s*mar)\b",
+    _RE.I
+)
+
+def _has_vietnamese(s):
+    st = str(s or "")
+    if not st:
+        return False
+    if _VN_EXCLUSIVE_RE.search(st):
+        return True
+    if _EURO_SHARED_ACCENT_RE.search(st) and _VN_BASIC_WORDS_RE.search(st):
+        return True
+    return False
+
+def _is_hdd_vietnamese_song(d):
+    meta_str = f"{d.get('title','')} {d.get('artist','')} {d.get('album','')} {d.get('genre','')}"
+    if _FOREIGN_ACCENT_ARTIST_RE.search(meta_str):
+        return False
+    path_str = str(d.get("path") or "")
+    full_str = f"{meta_str} {path_str}"
+    if _has_vietnamese(full_str):
+        return True
+    if _VN_UNACCENTED_KW.search(full_str):
+        return True
+    return False
+
+_SCACHE.clear()
