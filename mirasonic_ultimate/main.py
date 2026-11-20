@@ -7038,10 +7038,25 @@ def _is_hdd_vietnamese_song(d):
 
 _SCACHE.clear()
 
-
-# --- K26: V1.8.15 REAL ALBUM LOOKUP (GO TO ALBUM -> OFFICIAL YTMUSIC / HDD ALBUM + ALBUM INFO) ---
+# --- K26: V1.8.16 SAFE REAL ALBUM LOOKUP (FIX HTTP 500 ON GO TO ALBUM) ---
 _REAL_YTM_ALBUM_CACHE = {}
 _REAL_ALBUM_NOTES_CACHE = {}
+
+def _dg(obj, *keys):
+    cur = obj
+    for k in keys:
+        if isinstance(cur, dict):
+            cur = cur.get(k)
+        elif isinstance(cur, list) and isinstance(k, int) and 0 <= k < len(cur):
+            cur = cur[k]
+        else:
+            return None
+    return cur
+
+def _runs_text(runs):
+    if not isinstance(runs, list):
+        return ""
+    return "".join(str(x.get("text") or "") for x in runs if isinstance(x, dict)).strip()
 
 def _find_ytm_album_browse_id(vid):
     try:
@@ -7057,46 +7072,48 @@ def _find_ytm_album_browse_id(vid):
         )
         with _U.urlopen(req, timeout=3.5, context=_CTX) as r:
             data = _J.loads(r.read().decode("utf-8", "ignore"))
-            found = {"bid": "", "year": ""}
-            def _walk(node):
-                if found["bid"]:
-                    return
-                if isinstance(node, dict):
-                    if "playlistPanelVideoRenderer" in node:
-                        pvr = node["playlistPanelVideoRenderer"]
-                        if str(pvr.get("videoId") or "") == vid:
-                            runs = (pvr.get("longBylineText") or {}).get("runs") or []
-                            for rn in runs:
-                                bid = str(((rn.get("navigationEndpoint") or {}).get("browseEndpoint") or {}).get("browseId") or "")
-                                if bid.startswith("MPREb_"):
-                                    found["bid"] = bid
-                                tx = str(rn.get("text") or "").strip()
-                                if _RE.match(r"^(19|20)\d{2}$", tx):
-                                    found["year"] = tx
-                            if found["bid"]:
-                                return
-                    for v in node.values():
-                        _walk(v)
-                elif isinstance(node, list):
-                    for it in node:
-                        _walk(it)
-            _walk(data)
-            return found["bid"], found["year"]
+        found = {"bid": "", "year": ""}
+        def _walk(node):
+            if found["bid"]:
+                return
+            if isinstance(node, dict):
+                pvr = node.get("playlistPanelVideoRenderer")
+                if isinstance(pvr, dict) and str(pvr.get("videoId") or "") == vid:
+                    for bk in ("longBylineText", "shortBylineText"):
+                        runs = _dg(pvr, bk, "runs") or []
+                        for rn in runs:
+                            if not isinstance(rn, dict):
+                                continue
+                            bid = str(_dg(rn, "navigationEndpoint", "browseEndpoint", "browseId") or "")
+                            if bid.startswith("MPREb_"):
+                                found["bid"] = bid
+                            tx = str(rn.get("text") or "").strip()
+                            if _RE.match(r"^(19|20)\d{2}$", tx):
+                                found["year"] = tx
+                    if found["bid"]:
+                        return
+                for v in node.values():
+                    _walk(v)
+            elif isinstance(node, list):
+                for it in node:
+                    _walk(it)
+        _walk(data)
+        return found["bid"], found["year"]
     except Exception:
         return "", ""
 
 def _fetch_real_ytm_album_xml(vid, req_album_id):
-    now_t = _TM.time()
-    if vid in _REAL_YTM_ALBUM_CACHE and _REAL_YTM_ALBUM_CACHE[vid][1] > now_t:
-        cached = _REAL_YTM_ALBUM_CACHE[vid][0]
-        if cached is not None:
-            return _E.fromstring(cached)
-
-    bid, yr_hint = _find_ytm_album_browse_id(vid)
-    if not bid:
-        return None
-
     try:
+        now_t = _TM.time()
+        if vid in _REAL_YTM_ALBUM_CACHE and _REAL_YTM_ALBUM_CACHE[vid][1] > now_t:
+            cached = _REAL_YTM_ALBUM_CACHE[vid][0]
+            if cached is not None:
+                return _E.fromstring(cached)
+
+        bid, yr_hint = _find_ytm_album_browse_id(vid)
+        if not bid:
+            return None
+
         body = _J.dumps({
             "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": "1.20260101.01.00", "hl": "vi", "gl": "VN"}},
             "browseId": bid
@@ -7108,106 +7125,102 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
         )
         with _U.urlopen(req, timeout=4.0, context=_CTX) as r:
             data = _J.loads(r.read().decode("utf-8", "ignore"))
-    except Exception:
-        return None
 
-    meta = {"title": "", "artist": "", "year": yr_hint or "2026", "desc": "", "thumb": ""}
-    tracks = []
-    seen = set()
+        meta = {"title": "", "artist": "", "year": yr_hint or "2026", "desc": "", "thumb": ""}
+        tracks = []
+        seen = set()
 
-    def _walk_alb(node):
-        if isinstance(node, dict):
-            for hk in ("musicResponsiveHeaderRenderer", "musicDetailHeaderRenderer"):
-                if hk in node:
-                    hd = node[hk]
-                    t_runs = (hd.get("title") or {}).get("runs") or []
-                    if t_runs and not meta["title"]:
-                        meta["title"] = "".join(str(x.get("text") or "") for x in t_runs).strip()
-                    for sk in ("straplineTextOne", "subtitle"):
-                        s_runs = (hd.get(sk) or {}).get("runs") or []
-                        for sr in s_runs:
-                            stx = str(sr.get("text") or "").strip()
-                            if _RE.match(r"^(19|20)\d{2}$", stx):
-                                meta["year"] = stx
-                            elif sk == "straplineTextOne" and stx and stx != "•" and not meta["artist"]:
-                                meta["artist"] = stx
-                    d_runs = ((hd.get("description") or {}).get("musicDescriptionShelfRenderer") or {}).get("description", {}).get("runs") or []
-                    if d_runs and not meta["desc"]:
-                        meta["desc"] = "".join(str(x.get("text") or "") for x in d_runs).strip()
-                    ths = (((hd.get("thumbnail") or {}).get("musicThumbnailRenderer") or {}).get("thumbnail") or {}).get("thumbnails") or []
-                    if ths and not meta["thumb"]:
-                        meta["thumb"] = str(ths[-1].get("url") or "")
+        def _walk_alb(node):
+            if isinstance(node, dict):
+                for hk in ("musicResponsiveHeaderRenderer", "musicDetailHeaderRenderer"):
+                    hd = node.get(hk)
+                    if isinstance(hd, dict):
+                        t_txt = _runs_text(_dg(hd, "title", "runs"))
+                        if t_txt and not meta["title"]:
+                            meta["title"] = t_txt
+                        for sk in ("straplineTextOne", "subtitle"):
+                            for sr in (_dg(hd, sk, "runs") or []):
+                                if not isinstance(sr, dict):
+                                    continue
+                                stx = str(sr.get("text") or "").strip()
+                                if _RE.match(r"^(19|20)\d{2}$", stx):
+                                    meta["year"] = stx
+                                elif sk == "straplineTextOne" and stx and stx != "•" and not meta["artist"]:
+                                    meta["artist"] = stx
+                        d_txt = _runs_text(_dg(hd, "description", "musicDescriptionShelfRenderer", "description", "runs"))
+                        if d_txt and not meta["desc"]:
+                            meta["desc"] = d_txt
+                        ths = _dg(hd, "thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails")
+                        if isinstance(ths, list) and ths and isinstance(ths[-1], dict) and not meta["thumb"]:
+                            meta["thumb"] = str(ths[-1].get("url") or "")
 
-            if "musicResponsiveListItemRenderer" in node:
-                rv = node["musicResponsiveListItemRenderer"]
-                v_id = str((rv.get("playlistItemData") or {}).get("videoId") or "")
-                if not v_id:
-                    nav = (((rv.get("overlay") or {}).get("musicItemThumbnailOverlayRenderer") or {}).get("content") or {}).get("musicPlayButtonRenderer", {}).get("playNavigationEndpoint", {})
-                    v_id = str((nav.get("watchEndpoint") or {}).get("videoId") or "")
-                if v_id and v_id not in seen and _RE.match(r"^[A-Za-z0-9_-]{11}$", v_id):
-                    cols = rv.get("flexColumns") or []
-                    tit = ""
-                    art = meta["artist"] or "YouTube Music"
-                    if len(cols) >= 1:
-                        r0 = ((cols[0].get("musicResponsiveListItemFlexColumnRenderer") or {}).get("text") or {}).get("runs") or []
-                        tit = "".join(str(x.get("text") or "") for x in r0).strip()
-                    if len(cols) >= 2:
-                        r1 = ((cols[1].get("musicResponsiveListItemFlexColumnRenderer") or {}).get("text") or {}).get("runs") or []
-                        if r1 and str(r1[0].get("text") or "").strip():
+                rv = node.get("musicResponsiveListItemRenderer")
+                if isinstance(rv, dict):
+                    v_id = str(_dg(rv, "playlistItemData", "videoId") or "")
+                    if not v_id:
+                        v_id = str(_dg(rv, "overlay", "musicItemThumbnailOverlayRenderer", "content", "musicPlayButtonRenderer", "playNavigationEndpoint", "watchEndpoint", "videoId") or "")
+                    if v_id and v_id not in seen and _RE.match(r"^[A-Za-z0-9_-]{11}$", v_id):
+                        tit = _runs_text(_dg(rv, "flexColumns", 0, "musicResponsiveListItemFlexColumnRenderer", "text", "runs"))
+                        art = meta["artist"] or "YouTube Music"
+                        r1 = _dg(rv, "flexColumns", 1, "musicResponsiveListItemFlexColumnRenderer", "text", "runs")
+                        if isinstance(r1, list) and r1 and isinstance(r1[0], dict):
                             cand_a = str(r1[0].get("text") or "").strip()
-                            if not any(w in cand_a.lower() for w in ("lượt phát", "plays", "views")):
+                            if cand_a and not any(w in cand_a.lower() for w in ("lượt phát", "plays", "views")):
                                 art = cand_a
-                    dur_s = 240
-                    fcols = rv.get("fixedColumns") or []
-                    if fcols:
-                        fr = ((fcols[0].get("musicResponsiveListItemFixedColumnRenderer") or {}).get("text") or {}).get("runs") or []
-                        if fr:
+                        dur_s = 240
+                        fr = _dg(rv, "fixedColumns", 0, "musicResponsiveListItemFixedColumnRenderer", "text", "runs")
+                        if isinstance(fr, list) and fr and isinstance(fr[0], dict):
                             dur_s = _parse_dur_str(fr[0].get("text"))
-                    if tit:
-                        seen.add(v_id)
-                        if meta["thumb"] and ("googleusercontent.com" in meta["thumb"].lower() or "ggpht.com" in meta["thumb"].lower()):
-                            _YTM_THUMB[v_id] = meta["thumb"]
-                        sd = _make_song(v_id, tit, art, meta["title"] or tit, str(dur_s), is_vid=False, thumb_url=meta["thumb"])
-                        if sd:
-                            sd["year"] = meta["year"]
-                            tracks.append(sd)
-            for v in node.values():
-                _walk_alb(v)
-        elif isinstance(node, list):
-            for it in node:
-                _walk_alb(it)
+                        if tit:
+                            seen.add(v_id)
+                            if meta["thumb"] and ("googleusercontent.com" in meta["thumb"].lower() or "ggpht.com" in meta["thumb"].lower()):
+                                _YTM_THUMB[v_id] = meta["thumb"]
+                            sd = _make_song(v_id, tit, art, meta["title"] or tit, str(dur_s), is_vid=False, thumb_url=meta["thumb"])
+                            if isinstance(sd, dict):
+                                sd["year"] = str(meta["year"] or "2026")
+                                tracks.append(sd)
 
-    _walk_alb(data)
-    if not tracks:
+                for v in node.values():
+                    _walk_alb(v)
+            elif isinstance(node, list):
+                for it in node:
+                    _walk_alb(it)
+
+        _walk_alb(data)
+        if not tracks:
+            return None
+
+        alb_title = str(meta["title"] or tracks[0].get("album") or tracks[0].get("title") or "Album")
+        alb_artist = str(meta["artist"] or tracks[0].get("artist") or "YouTube Music")
+        alb_arid = str(_artist_id(alb_artist))
+        yr_clean = str(meta["year"]) if _RE.match(r"^(19|20)\d{2}$", str(meta["year"] or "")) else "2026"
+        total_dur = sum(int(x.get("duration") or 240) for x in tracks if str(x.get("duration", "")).isdigit())
+        first_v = str(tracks[0].get("id") or vid)
+
+        if meta["desc"]:
+            _REAL_ALBUM_NOTES_CACHE[str(req_album_id)] = meta["desc"]
+            _REAL_ALBUM_NOTES_CACHE[vid] = meta["desc"]
+
+        rt = _E.Element("subsonic-response", status="ok")
+        al_el = _E.SubElement(
+            rt, "album",
+            id=str(req_album_id), parent=alb_arid, artistId=alb_arid, isDir="true",
+            name=alb_title, title=alb_title, album=alb_title, artist=alb_artist,
+            coverArt="yt37_trk_" + first_v, songCount=str(len(tracks)),
+            duration=str(total_dur), created=f"{yr_clean}-01-01T00:00:00.000Z", year=yr_clean
+        )
+        for idx, tr in enumerate(tracks, 1):
+            tc = {str(k): str(v) for k, v in tr.items() if v is not None}
+            tc["album"] = alb_title
+            tc["year"] = yr_clean
+            tc["track"] = str(idx)
+            _E.SubElement(al_el, "song", **tc)
+
+        _REAL_YTM_ALBUM_CACHE[vid] = (_E.tostring(rt, encoding="utf-8"), now_t + 3600)
+        return rt
+    except Exception as _e:
+        print(f"[K26_YTM_ALB_ERR] {_e}", flush=True)
         return None
-
-    alb_title = meta["title"] or tracks[0].get("album") or tracks[0].get("title") or "Album"
-    alb_artist = meta["artist"] or tracks[0].get("artist") or "YouTube Music"
-    alb_arid = _artist_id(alb_artist)
-    total_dur = sum(int(x.get("duration") or 240) for x in tracks if str(x.get("duration", "")).isdigit())
-    first_v = tracks[0]["id"]
-
-    if meta["desc"]:
-        _REAL_ALBUM_NOTES_CACHE[str(req_album_id)] = meta["desc"]
-        _REAL_ALBUM_NOTES_CACHE[vid] = meta["desc"]
-
-    rt = _E.Element("subsonic-response", status="ok")
-    al_el = _E.SubElement(
-        rt, "album",
-        id=str(req_album_id), parent=alb_arid, artistId=alb_arid, isDir="true",
-        name=alb_title, title=alb_title, album=alb_title, artist=alb_artist,
-        coverArt="yt37_trk_" + first_v, songCount=str(len(tracks)),
-        duration=str(total_dur), created=f"{meta['year']}-01-01T00:00:00.000Z", year=str(meta["year"])
-    )
-    for idx, tr in enumerate(tracks, 1):
-        tc = dict(tr)
-        tc["album"] = alb_title
-        tc["year"] = str(meta["year"])
-        tc["track"] = str(idx)
-        _E.SubElement(al_el, "song", **tc)
-
-    _REAL_YTM_ALBUM_CACHE[vid] = (_E.tostring(rt, encoding="utf-8"), now_t + 3600)
-    return rt
 
 def _fetch_real_hdd_album_xml(raw_alid, req_album_id):
     if not _HDD or not raw_alid:
@@ -7232,6 +7245,8 @@ def _fetch_real_hdd_album_xml(raw_alid, req_album_id):
             tit = str((alb_node or {}).get("name") or first_s.get("album") or "HDD Album")
             art = str((alb_node or {}).get("artist") or first_s.get("artist") or "HDD Artist")
             yr = str((alb_node or {}).get("year") or first_s.get("year") or "2026")
+            if not _RE.match(r"^(19|20)\d{2}$", yr):
+                yr = "2026"
             total_dur = sum(int(x.get("duration") or 240) for x in songs if str(x.get("duration", "")).isdigit())
             rt = _E.Element("subsonic-response", status="ok")
             al_el = _E.SubElement(
@@ -7243,12 +7258,13 @@ def _fetch_real_hdd_album_xml(raw_alid, req_album_id):
                 duration=str(total_dur), created=f"{yr}-01-01T00:00:00.000Z", year=yr
             )
             for idx, tr in enumerate(songs, 1):
-                tc = dict(tr)
+                tc = {str(k): str(v) for k, v in tr.items() if v is not None}
                 tc["album"] = tit
                 tc["track"] = str(tc.get("track") or idx)
                 _E.SubElement(al_el, "song", **tc)
             return rt
-    except Exception:
+    except Exception as _e:
+        print(f"[K26_HDD_ALB_ERR] {_e}", flush=True)
         return None
 
 @app.middleware("http")
@@ -7257,52 +7273,54 @@ async def _k26_real_album_mw(req, call_next):
     if not pl.startswith("/rest/"):
         return await call_next(req)
 
-    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
-    qd = dict(qi); fv = qd.get("f", "").lower()
-    js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
-    cb = qd.get("callback") if fv == "jsonp" else None
-    if not _check_auth(qd):
-        return await call_next(req)
+    try:
+        qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+        qd = dict(qi); fv = qd.get("f", "").lower()
+        js = fv in ("json", "jsonp") or "application/json" in req.headers.get("accept", "").lower()
+        cb = qd.get("callback") if fv == "jsonp" else None
+        if not _check_auth(qd):
+            return await call_next(req)
 
-    lp = _A.get_running_loop()
-    uname = _clean_uname(qd.get("u"))
+        lp = _A.get_running_loop()
+        uname = _clean_uname(qd.get("u"))
 
-    # 1. Mo Dia nhac goc khi bam "Go to album" tren Wavio/Substreamer (realalb_ / hdd_realal_)
-    if ("/getalbum" in pl and "getalbumlist" not in pl and "getalbuminfo" not in pl) or "/getmusicdirectory" in pl:
-        aid = str(qd.get("id") or "").strip()
-        if aid.startswith("realalb_"):
-            vid = _RE.sub(r"^realalb_", "", aid)
-            rt = await lp.run_in_executor(_REQ_POOL, _fetch_real_ytm_album_xml, vid, aid)
-            if rt is None:
-                rt = await lp.run_in_executor(_REQ_POOL, _build_endless_yt_album, vid, aid, uname)
-            if "/getmusicdirectory" in pl:
-                for x in rt.iter():
-                    if x.tag == "album": x.tag = "directory"
-                    elif x.tag == "song": x.tag = "child"
-            return _fmt(rt, js, cb)
+        if ("/getalbum" in pl and "getalbumlist" not in pl and "getalbuminfo" not in pl) or "/getmusicdirectory" in pl:
+            aid = str(qd.get("id") or "").strip()
+            if aid.startswith("realalb_"):
+                vid = _RE.sub(r"^realalb_", "", aid)
+                rt = await lp.run_in_executor(_REQ_POOL, _fetch_real_ytm_album_xml, vid, aid)
+                if rt is None:
+                    rt = await lp.run_in_executor(_REQ_POOL, _build_endless_yt_album, vid, aid, uname)
+                if rt is not None:
+                    if "/getmusicdirectory" in pl:
+                        for x in rt.iter():
+                            if x.tag == "album": x.tag = "directory"
+                            elif x.tag == "song": x.tag = "child"
+                    return _fmt(rt, js, cb)
 
-        if aid.startswith("hdd_realal_"):
-            raw_al = _RE.sub(r"^hdd_realal_", "", aid)
-            rt = await lp.run_in_executor(_REQ_POOL, _fetch_real_hdd_album_xml, raw_al, aid)
-            if rt is None:
-                rt = await lp.run_in_executor(_REQ_POOL, _build_endless_hdd_mix, "hdd_al_" + raw_al, uname)
-            if rt is not None:
-                if "/getmusicdirectory" in pl:
-                    for x in rt.iter():
-                        if x.tag == "album": x.tag = "directory"
-                        elif x.tag == "song": x.tag = "child"
+            if aid.startswith("hdd_realal_"):
+                raw_al = _RE.sub(r"^hdd_realal_", "", aid)
+                rt = await lp.run_in_executor(_REQ_POOL, _fetch_real_hdd_album_xml, raw_al, aid)
+                if rt is None:
+                    rt = await lp.run_in_executor(_REQ_POOL, _build_endless_hdd_mix, "hdd_al_" + raw_al, uname)
+                if rt is not None:
+                    if "/getmusicdirectory" in pl:
+                        for x in rt.iter():
+                            if x.tag == "album": x.tag = "directory"
+                            elif x.tag == "song": x.tag = "child"
+                    return _fmt(rt, js, cb)
+
+        if "getalbuminfo" in pl:
+            aid = str(qd.get("id") or "").strip()
+            vid_k = _RE.sub(r"^(realalb_|al_|yt\d*_)+", "", aid)
+            notes = _REAL_ALBUM_NOTES_CACHE.get(aid) or _REAL_ALBUM_NOTES_CACHE.get(vid_k) or ""
+            if notes:
+                rt = _E.Element("subsonic-response", status="ok")
+                ai = _E.SubElement(rt, "albumInfo")
+                _E.SubElement(ai, "notes").text = notes
                 return _fmt(rt, js, cb)
-
-    # 2. Tra ve loi gioi thieu Dia nhac (Album notes) cho Wavio qua getAlbumInfo / getAlbumInfo2
-    if "getalbuminfo" in pl:
-        aid = str(qd.get("id") or "").strip()
-        vid_k = _RE.sub(r"^(realalb_|al_|yt\d*_)+", "", aid)
-        notes = _REAL_ALBUM_NOTES_CACHE.get(aid) or _REAL_ALBUM_NOTES_CACHE.get(vid_k) or ""
-        if notes:
-            rt = _E.Element("subsonic-response", status="ok")
-            ai = _E.SubElement(rt, "albumInfo")
-            _E.SubElement(ai, "notes").text = notes
-            return _fmt(rt, js, cb)
+    except Exception as _e:
+        print(f"[K26_MW_ERR] {_e}", flush=True)
 
     return await call_next(req)
 
