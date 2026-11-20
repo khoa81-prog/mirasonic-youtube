@@ -7038,9 +7038,10 @@ def _is_hdd_vietnamese_song(d):
 
 _SCACHE.clear()
 
-# --- K26: V1.8.16 SAFE REAL ALBUM LOOKUP (FIX HTTP 500 ON GO TO ALBUM) ---
+# --- K26: V1.8.17 ACCURATE OFFICIAL YTMUSIC ALBUM LOOKUP (RDAMVM + MENU + SEARCH FALLBACK) ---
 _REAL_YTM_ALBUM_CACHE = {}
 _REAL_ALBUM_NOTES_CACHE = {}
+_YTM_ORIGIN = "https:" + "//music.youtube.com"
 
 def _dg(obj, *keys):
     cur = obj
@@ -7058,49 +7059,117 @@ def _runs_text(runs):
         return ""
     return "".join(str(x.get("text") or "") for x in runs if isinstance(x, dict)).strip()
 
+def _find_first_mpreb(node):
+    if isinstance(node, dict):
+        bid = str(_dg(node, "browseEndpoint", "browseId") or "")
+        if bid.startswith("MPREb_"):
+            return bid
+        for v in node.values():
+            res = _find_first_mpreb(v)
+            if res:
+                return res
+    elif isinstance(node, list):
+        for it in node:
+            res = _find_first_mpreb(it)
+            if res:
+                return res
+    return ""
+
+def _find_first_watch_vid(node):
+    if isinstance(node, dict):
+        v = str(_dg(node, "watchEndpoint", "videoId") or "")
+        if _RE.match(r"^[A-Za-z0-9_-]{11}$", v):
+            return v
+        for val in node.values():
+            res = _find_first_watch_vid(val)
+            if res:
+                return res
+    elif isinstance(node, list):
+        for it in node:
+            res = _find_first_watch_vid(it)
+            if res:
+                return res
+    return ""
+
+def _ytm_post_json(endpoint, payload, timeout=4.0):
+    body = _J.dumps(payload).encode("utf-8")
+    req = _U.Request(
+        f"{_YTM_ORIGIN}/youtubei/v1/{endpoint}?prettyPrint=false",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Origin": _YTM_ORIGIN,
+            "Referer": _YTM_ORIGIN + "/"
+        }
+    )
+    with _U.urlopen(req, timeout=timeout, context=_CTX) as r:
+        return _J.loads(r.read().decode("utf-8", "ignore"))
+
 def _find_ytm_album_browse_id(vid):
+    ctx_obj = {"client": {"clientName": "WEB_REMIX", "clientVersion": "1.20241101.01.00", "hl": "vi", "gl": "VN"}}
     try:
-        body = _J.dumps({
-            "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": "1.20260101.01.00", "hl": "vi", "gl": "VN"}},
+        data = _ytm_post_json("next", {
+            "context": ctx_obj,
             "videoId": vid,
+            "playlistId": f"RDAMVM{vid}",
             "isAudioOnly": True
-        }).encode("utf-8")
-        req = _U.Request(
-            "https://music.youtube.com/youtubei/v1/next?prettyPrint=false",
-            data=body,
-            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "Origin": "https://music.youtube.com", "Referer": "https://music.youtube.com/"}
-        )
-        with _U.urlopen(req, timeout=3.5, context=_CTX) as r:
-            data = _J.loads(r.read().decode("utf-8", "ignore"))
-        found = {"bid": "", "year": ""}
+        }, timeout=3.8)
+        found = {"bid": "", "year": "", "first_bid": "", "first_yr": ""}
         def _walk(node):
             if found["bid"]:
                 return
             if isinstance(node, dict):
                 pvr = node.get("playlistPanelVideoRenderer")
-                if isinstance(pvr, dict) and str(pvr.get("videoId") or "") == vid:
+                if isinstance(pvr, dict):
+                    p_vid = str(pvr.get("videoId") or "")
+                    b_id = _find_first_mpreb(pvr)
+                    yr_m = ""
                     for bk in ("longBylineText", "shortBylineText"):
-                        runs = _dg(pvr, bk, "runs") or []
-                        for rn in runs:
-                            if not isinstance(rn, dict):
-                                continue
-                            bid = str(_dg(rn, "navigationEndpoint", "browseEndpoint", "browseId") or "")
-                            if bid.startswith("MPREb_"):
-                                found["bid"] = bid
-                            tx = str(rn.get("text") or "").strip()
-                            if _RE.match(r"^(19|20)\d{2}$", tx):
-                                found["year"] = tx
-                    if found["bid"]:
-                        return
+                        for rn in (_dg(pvr, bk, "runs") or []):
+                            if isinstance(rn, dict):
+                                tx = str(rn.get("text") or "").strip()
+                                if _RE.match(r"^(19|20)\d{2}$", tx):
+                                    yr_m = tx
+                    if b_id:
+                        if p_vid == vid:
+                            found["bid"] = b_id
+                            found["year"] = yr_m
+                            return
+                        elif not found["first_bid"]:
+                            found["first_bid"] = b_id
+                            found["first_yr"] = yr_m
                 for v in node.values():
                     _walk(v)
             elif isinstance(node, list):
                 for it in node:
                     _walk(it)
         _walk(data)
-        return found["bid"], found["year"]
+        if found["bid"]:
+            return found["bid"], found["year"]
+        if found["first_bid"]:
+            return found["first_bid"], found["first_yr"]
     except Exception:
-        return "", ""
+        pass
+
+    try:
+        sd = _YL.get(vid) or _ensure_vid_meta(vid) or {}
+        tit = _RE.sub(r"^\s*\[(HDD|YTM|YT)\]\s*", "", str(sd.get("title") or ""), flags=_RE.I).strip()
+        art = str(sd.get("artist") or "").strip()
+        q_str = f"{tit} {art}".strip()
+        if q_str and q_str != vid:
+            sdata = _ytm_post_json("search", {
+                "context": ctx_obj,
+                "query": q_str,
+                "params": "EgWKAQIIAWoKEAkQChADEAUQBA%3D%3D"
+            }, timeout=3.8)
+            bid_s = _find_first_mpreb(sdata)
+            if bid_s:
+                return bid_s, ""
+    except Exception:
+        pass
+
+    return "", ""
 
 def _fetch_real_ytm_album_xml(vid, req_album_id):
     try:
@@ -7114,17 +7183,10 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
         if not bid:
             return None
 
-        body = _J.dumps({
-            "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": "1.20260101.01.00", "hl": "vi", "gl": "VN"}},
+        data = _ytm_post_json("browse", {
+            "context": {"client": {"clientName": "WEB_REMIX", "clientVersion": "1.20241101.01.00", "hl": "vi", "gl": "VN"}},
             "browseId": bid
-        }).encode("utf-8")
-        req = _U.Request(
-            "https://music.youtube.com/youtubei/v1/browse?prettyPrint=false",
-            data=body,
-            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "Origin": "https://music.youtube.com", "Referer": "https://music.youtube.com/"}
-        )
-        with _U.urlopen(req, timeout=4.0, context=_CTX) as r:
-            data = _J.loads(r.read().decode("utf-8", "ignore"))
+        }, timeout=4.2)
 
         meta = {"title": "", "artist": "", "year": yr_hint or "2026", "desc": "", "thumb": ""}
         tracks = []
@@ -7157,8 +7219,8 @@ def _fetch_real_ytm_album_xml(vid, req_album_id):
                 rv = node.get("musicResponsiveListItemRenderer")
                 if isinstance(rv, dict):
                     v_id = str(_dg(rv, "playlistItemData", "videoId") or "")
-                    if not v_id:
-                        v_id = str(_dg(rv, "overlay", "musicItemThumbnailOverlayRenderer", "content", "musicPlayButtonRenderer", "playNavigationEndpoint", "watchEndpoint", "videoId") or "")
+                    if not _RE.match(r"^[A-Za-z0-9_-]{11}$", v_id):
+                        v_id = _find_first_watch_vid(rv)
                     if v_id and v_id not in seen and _RE.match(r"^[A-Za-z0-9_-]{11}$", v_id):
                         tit = _runs_text(_dg(rv, "flexColumns", 0, "musicResponsiveListItemFlexColumnRenderer", "text", "runs"))
                         art = meta["artist"] or "YouTube Music"
