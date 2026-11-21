@@ -7492,19 +7492,19 @@ except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
 
-# --- K28: V1.8.25 STREAM-AWARE MIDDLEWARE TO STRIP [YTM] PREFIX (KEEP [HDD] & [YT]) ---
-_K28_YTM_RE = _RE.compile(r"^\s*\[YTM\]\s*", _RE.I)
-_K28_XML_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[YTM\]\s*', _RE.I)
-_K28_JSONP_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[YTM\]\s*', _RE.I)
+# --- K28: V1.8.26 STRIP ALL TEXT PREFIXES [HDD]/[YT]/[YTM] (LOGOS MOVED TO COVER ART) ---
+_K28_PFX_RE = _RE.compile(r"^\s*\[(?:HDD|YTM|YT)\]\s*", _RE.I)
+_K28_XML_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[(?:HDD|YTM|YT)\]\s*', _RE.I)
+_K28_JSONP_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[(?:HDD|YTM|YT)\]\s*', _RE.I)
 
 def _k28_clean_json(node):
     changed = False
     if isinstance(node, dict):
         for _k in ("title", "name", "album"):
             _v = node.get(_k)
-            if isinstance(_v, str) and "[ytm]" in _v.lower():
-                _nv = _K28_YTM_RE.sub("", _v).strip()
-                if _nv:
+            if isinstance(_v, str) and "[" in _v:
+                _nv = _K28_PFX_RE.sub("", _v).strip()
+                if _nv and _nv != _v:
                     node[_k] = _nv
                     changed = True
         for _val in node.values():
@@ -7519,7 +7519,7 @@ def _k28_clean_json(node):
     return changed
 
 @app.middleware("http")
-async def _k28_strip_ytm_mw(req, call_next):
+async def _k28_strip_all_prefixes_mw(req, call_next):
     resp = await call_next(req)
     p = _RE.sub(r"/+", "/", req.url.path).lower()
     if not p.startswith("/rest/") or resp.status_code != 200 or req.method == "HEAD":
@@ -7547,7 +7547,8 @@ async def _k28_strip_ytm_mw(req, call_next):
 
     out_b = body
     try:
-        if b"[ytm]" in body.lower():
+        lb = body.lower()
+        if b"[ytm]" in lb or b"[hdd]" in lb or b"[yt]" in lb:
             bs = body.lstrip()
             if bs.startswith(b"{"):
                 data = _J.loads(body.decode("utf-8", "ignore"))
@@ -7563,6 +7564,149 @@ async def _k28_strip_ytm_mw(req, call_next):
     if consumed or out_b != body:
         hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
         return _R(content=out_b, status_code=resp.status_code, media_type=resp.headers.get("content-type") or resp.media_type, headers=hdrs)
+    return resp
+
+
+# --- K29: V1.8.26 CRISP SOURCE LOGO BADGES (HDD / YOUTUBE / YOUTUBE MUSIC) ON COVER ART ---
+import io as _K29IO
+try:
+    from PIL import Image as _K29Img, ImageDraw as _K29Draw
+    _K29_LANCZOS = getattr(getattr(_K29Img, "Resampling", _K29Img), "LANCZOS", _K29Img.BICUBIC)
+    _K29_HAS_PIL = True
+except Exception:
+    _K29_HAS_PIL = False
+
+_K29_ICON_CACHE = {}
+_K29_IMG_CACHE = {}
+
+def _k29_make_badge(kind, sz):
+    ck = (kind, sz)
+    if ck in _K29_ICON_CACHE:
+        return _K29_ICON_CACHE[ck]
+    S = 4
+    if kind == "yt":
+        W, H = int(sz * 1.28 * S), int(sz * 0.90 * S)
+        im = _K29Img.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = _K29Draw.Draw(im)
+        d.rounded_rectangle((2, 2, W - 2, H - 2), radius=int(H * 0.27), fill=(0, 0, 0, 145))
+        d.rounded_rectangle((6, 6, W - 6, H - 6), radius=int(H * 0.24), fill=(255, 0, 0, 255), outline=(255, 255, 255, 225), width=max(2, S))
+        cx, cy, r = W * 0.52, H * 0.50, H * 0.24
+        d.polygon([(cx - r * 0.72, cy - r * 0.90), (cx - r * 0.72, cy + r * 0.90), (cx + r * 0.98, cy)], fill=(255, 255, 255, 255))
+        out = im.resize((max(1, W // S), max(1, H // S)), _K29_LANCZOS)
+    elif kind == "ytm":
+        W = H = sz * S
+        im = _K29Img.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = _K29Draw.Draw(im)
+        d.ellipse((2, 2, W - 2, H - 2), fill=(0, 0, 0, 145))
+        d.ellipse((6, 6, W - 6, H - 6), fill=(255, 0, 0, 255), outline=(255, 255, 255, 225), width=max(2, S))
+        m = int(W * 0.20)
+        d.ellipse((m, m, W - m, H - m), outline=(255, 255, 255, 255), width=max(3, int(W * 0.048)))
+        cx, cy, r = W * 0.52, H * 0.50, W * 0.165
+        d.polygon([(cx - r * 0.72, cy - r * 0.90), (cx - r * 0.72, cy + r * 0.90), (cx + r * 0.98, cy)], fill=(255, 255, 255, 255))
+        out = im.resize((sz, sz), _K29_LANCZOS)
+    else:
+        W = H = sz * S
+        im = _K29Img.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = _K29Draw.Draw(im)
+        d.rounded_rectangle((2, 2, W - 2, H - 2), radius=int(W * 0.25), fill=(0, 0, 0, 145))
+        d.rounded_rectangle((6, 6, W - 6, H - 6), radius=int(W * 0.22), fill=(0, 176, 107, 255), outline=(255, 255, 255, 225), width=max(2, S))
+        sw = max(3, int(W * 0.052))
+        d.rounded_rectangle((int(W * 0.23), int(H * 0.17), int(W * 0.77), int(H * 0.83)), radius=int(W * 0.08), outline=(255, 255, 255, 255), width=sw)
+        cx, cy, pr = W * 0.50, H * 0.42, W * 0.145
+        d.ellipse((cx - pr, cy - pr, cx + pr, cy + pr), outline=(255, 255, 255, 255), width=max(2, int(W * 0.042)))
+        sr = W * 0.048
+        d.ellipse((cx - sr, cy - sr, cx + sr, cy + sr), fill=(255, 255, 255, 255))
+        ly = int(H * 0.65)
+        d.line((int(W * 0.25), ly, int(W * 0.75), ly), fill=(255, 255, 255, 255), width=max(2, int(W * 0.042)))
+        d.ellipse((int(W * 0.60), int(H * 0.71), int(W * 0.68), int(H * 0.79)), fill=(255, 255, 255, 255))
+        out = im.resize((sz, sz), _K29_LANCZOS)
+    _K29_ICON_CACHE[ck] = out
+    return out
+
+def _k29_detect_source(cid):
+    s = str(cid or "").strip()
+    sl = s.lower()
+    if not s or sl.startswith(("ar_", "hdd_ar", "artist_")) or "avatar" in sl:
+        return None
+    if sl.startswith("hdd"):
+        return "hdd"
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", s)
+    vid = m.group(1) if m else ""
+    if vid:
+        sd = _YL.get(vid)
+        if isinstance(sd, dict):
+            tl = str(sd.get("title") or "").lower()
+            if "[yt]" in tl:
+                return "yt"
+            if "[ytm]" in tl:
+                return "ytm"
+        if vid in _YTM_THUMB:
+            return "ytm"
+    if sl.startswith(("yt", "al_", "realalb_")) or vid:
+        return "ytm"
+    return None
+
+def _k29_stamp_cover(img_bytes, kind):
+    if not _K29_HAS_PIL or not img_bytes or not kind:
+        return img_bytes
+    ck = (kind, len(img_bytes), img_bytes[:24], img_bytes[-24:])
+    if ck in _K29_IMG_CACHE:
+        return _K29_IMG_CACHE[ck]
+    try:
+        im = _K29Img.open(_K29IO.BytesIO(img_bytes)).convert("RGBA")
+        w, h = im.size
+        if min(w, h) < 48:
+            return img_bytes
+        sz = max(24, int(min(w, h) * 0.20))
+        pad = max(6, int(min(w, h) * 0.035))
+        badge = _k29_make_badge(kind, sz)
+        bw, bh = badge.size
+        im.alpha_composite(badge, (max(0, w - bw - pad), max(0, h - bh - pad)))
+        buf = _K29IO.BytesIO()
+        im.convert("RGB").save(buf, format="JPEG", quality=92)
+        res = buf.getvalue()
+        if len(_K29_IMG_CACHE) > 350:
+            _K29_IMG_CACHE.clear()
+        _K29_IMG_CACHE[ck] = res
+        return res
+    except Exception:
+        return img_bytes
+
+@app.middleware("http")
+async def _k29_cover_logo_mw(req, call_next):
+    resp = await call_next(req)
+    p = _RE.sub(r"/+", "/", req.url.path).lower()
+    if not p.startswith("/rest/") or "/getcoverart" not in p or resp.status_code != 200 or req.method == "HEAD":
+        return resp
+    ct = (resp.headers.get("content-type") or "").lower()
+    if ct and "image" not in ct:
+        return resp
+
+    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    kind = _k29_detect_source(dict(qi).get("id"))
+    if not kind:
+        return resp
+
+    consumed = False
+    body = getattr(resp, "body", None)
+    if body is None and hasattr(resp, "body_iterator"):
+        chunks = []
+        async for chunk in resp.body_iterator:
+            chunks.append(chunk)
+        body = b"".join(chunks)
+        consumed = True
+
+    if not body:
+        if consumed:
+            hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
+            return _R(content=b"", status_code=200, media_type="image/jpeg", headers=hdrs)
+        return resp
+
+    lp = _A.get_running_loop()
+    out_b = await lp.run_in_executor(_REQ_POOL, _k29_stamp_cover, body, kind)
+    if consumed or out_b != body:
+        hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
+        return _R(content=out_b, status_code=200, media_type="image/jpeg", headers=hdrs)
     return resp
 
 _SCACHE.clear()
