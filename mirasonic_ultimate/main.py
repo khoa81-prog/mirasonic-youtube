@@ -7491,7 +7491,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.31 TURBO COVER ART (L1 RAM + L2 DISK + DEDICATED POOL + SINGLE-FLIGHT + ETAG/304) ---
+# --- K28: V1.8.32 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
@@ -7518,13 +7518,19 @@ try:
 except Exception:
     pass
 
-_K29_ART_POOL = _K29TPE(max_workers=6, thread_name_prefix="k29art")
+_K29_ART_POOL = _K29TPE(max_workers=3, thread_name_prefix="k29art")
+_K29_FETCH_SEM = [None]
 _K29_SRC_MAP = {}
 _K29_ICON_CACHE = {}
 _K29_FAST_RAM = _K29OD()
 _K29_RAM_MAX = 600
 _K29_LOCKS = {}
 _K29_DISK_WRITES = [0]
+
+def _k29_get_sem():
+    if _K29_FETCH_SEM[0] is None:
+        _K29_FETCH_SEM[0] = _A.Semaphore(4)
+    return _K29_FETCH_SEM[0]
 
 try:
     if _OS.path.isfile(_K29_MAP_FILE):
@@ -7771,13 +7777,11 @@ def _k29_get_lock(ckey):
         _K29_LOCKS[ckey] = lk
     return lk
 
-def _k29_art_headers(etag=None, head_len=None):
+def _k29_art_headers(etag=None):
     h = dict(globals().get("_CORS") or {})
     h["Cache-Control"] = "public, max-age=2592000, immutable"
     if etag:
         h["ETag"] = etag
-    if head_len is not None:
-        h["Content-Length"] = str(head_len)
     return h
 
 def _k29_process_cover(img_bytes, kind, bucket):
@@ -7812,10 +7816,10 @@ async def _k28_unified_clean_and_logo_mw(req, call_next):
     p = _RE.sub(r"/+", "/", req.url.path).lower()
     if not p.startswith("/rest/"):
         return await call_next(req)
-    if any(x in p for x in ("/stream", "/download", "/getavatar", "/hls")):
+    if any(x in p for x in ("/stream", "/download", "/getavatar", "/hls", "/ping", "/getlicense", "/getuser", "/scrobble")):
         return await call_next(req)
 
-    # 1. Tang toc anh bia (getCoverArt): L1 RAM -> L2 Disk -> Single-flight -> Stamp & Cache
+    # 1. Tang toc anh bia (getCoverArt): L1 RAM -> L2 Disk -> Single-flight + Gioi han tai mang dong thoi
     if "/getcoverart" in p:
         qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
         qd = dict(qi)
@@ -7842,20 +7846,16 @@ async def _k28_unified_clean_and_logo_mw(req, call_next):
 
         hit = _k29_ram_get(ckey)
         if hit:
-            if req.method == "HEAD":
-                return _R(content=b"", status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag, len(hit)))
-            return _R(content=hit, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
+            return _R(content=b"" if req.method == "HEAD" else hit, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
 
         lp = _A.get_running_loop()
         d_hit = await lp.run_in_executor(_K29_ART_POOL, _k29_disk_read, ckey)
         if d_hit:
             _k29_ram_put(ckey, d_hit)
-            if req.method == "HEAD":
-                return _R(content=b"", status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag, len(d_hit)))
-            return _R(content=d_hit, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
+            return _R(content=b"" if req.method == "HEAD" else d_hit, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
 
         if req.method == "HEAD":
-            return await call_next(req)
+            return _R(content=b"", status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
 
         lk = _k29_get_lock(ckey)
         async with lk:
@@ -7863,19 +7863,22 @@ async def _k28_unified_clean_and_logo_mw(req, call_next):
             if hit2:
                 return _R(content=hit2, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
 
-            resp = await call_next(req)
-            if resp.status_code != 200:
-                return resp
-            ct = (resp.headers.get("content-type") or "").lower()
-            if ct and "image" not in ct:
-                return resp
-
-            body = getattr(resp, "body", None)
-            if body is None and hasattr(resp, "body_iterator"):
-                chunks = []
-                async for chunk in resp.body_iterator:
-                    chunks.append(chunk)
-                body = b"".join(chunks)
+            async with _k29_get_sem():
+                resp = await call_next(req)
+                if resp.status_code != 200:
+                    return resp
+                ct = (resp.headers.get("content-type") or "").lower()
+                if ct and "image" not in ct:
+                    return resp
+                body = getattr(resp, "body", None)
+                if body is None and hasattr(resp, "body_iterator"):
+                    chunks = []
+                    try:
+                        async for chunk in resp.body_iterator:
+                            chunks.append(chunk)
+                    except Exception:
+                        return _R(content=b"", status_code=499)
+                    body = b"".join(chunks)
 
             if not body or len(body) < 100:
                 return _R(content=body or b"", status_code=200, media_type=ct or "image/jpeg", headers=_k29_art_headers())
@@ -7902,8 +7905,11 @@ async def _k28_unified_clean_and_logo_mw(req, call_next):
     body = getattr(resp, "body", None)
     if body is None and hasattr(resp, "body_iterator"):
         chunks = []
-        async for chunk in resp.body_iterator:
-            chunks.append(chunk)
+        try:
+            async for chunk in resp.body_iterator:
+                chunks.append(chunk)
+        except Exception:
+            return _R(content=b"", status_code=499)
         body = b"".join(chunks)
         consumed = True
 
