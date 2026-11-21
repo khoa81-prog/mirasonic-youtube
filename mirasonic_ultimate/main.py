@@ -7491,9 +7491,11 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
+# --- K28: V1.8.31 TURBO COVER ART (L1 RAM + L2 DISK + DEDICATED POOL + SINGLE-FLIGHT + ETAG/304) ---
+import io as _K29IO, hashlib as _K29HL
+from collections import OrderedDict as _K29OD
+from concurrent.futures import ThreadPoolExecutor as _K29TPE
 
-# --- K28: V1.8.30 SINGLE-MIDDLEWARE CLEAN TITLES + CRISP SOURCE LOGOS (STABLE 1.8.25 CORE) ---
-import io as _K29IO
 try:
     from PIL import Image as _K29Img, ImageDraw as _K29Draw
     _K29_LANCZOS = getattr(getattr(_K29Img, "Resampling", _K29Img), "LANCZOS", _K29Img.BICUBIC)
@@ -7510,9 +7512,19 @@ _K28_XML_STRIP_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[(?:HDD|YTM|YT)\]
 _K28_JSONP_STRIP_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[(?:HDD|YTM|YT)\]\s*', _RE.I)
 
 _K29_MAP_FILE = "/data/k29_src_map.json" if _OS.path.isdir("/data") else "/tmp/k29_src_map.json"
+_K29_DISK_DIR = "/data/k29_art_v31" if _OS.path.isdir("/data") else "/tmp/k29_art_v31"
+try:
+    _OS.makedirs(_K29_DISK_DIR, exist_ok=True)
+except Exception:
+    pass
+
+_K29_ART_POOL = _K29TPE(max_workers=6, thread_name_prefix="k29art")
 _K29_SRC_MAP = {}
 _K29_ICON_CACHE = {}
-_K29_IMG_CACHE = {}
+_K29_FAST_RAM = _K29OD()
+_K29_RAM_MAX = 600
+_K29_LOCKS = {}
+_K29_DISK_WRITES = [0]
 
 try:
     if _OS.path.isfile(_K29_MAP_FILE):
@@ -7527,8 +7539,10 @@ def _k29_save_map():
         if len(_K29_SRC_MAP) > 4000:
             for _ok in list(_K29_SRC_MAP.keys())[:1000]:
                 _K29_SRC_MAP.pop(_ok, None)
-        with open(_K29_MAP_FILE, "w", encoding="utf-8") as _f:
+        tmp_f = _K29_MAP_FILE + ".tmp"
+        with open(tmp_f, "w", encoding="utf-8") as _f:
             _J.dump(dict(_K29_SRC_MAP), _f)
+        _OS.replace(tmp_f, _K29_MAP_FILE)
     except Exception:
         pass
 
@@ -7698,38 +7712,182 @@ def _k29_detect_source(cid):
         return "ytm"
     return None
 
-def _k29_stamp_cover(img_bytes, kind):
-    if not _K29_HAS_PIL or not img_bytes or not kind:
-        return img_bytes
-    ck = (kind, len(img_bytes), img_bytes[:24], img_bytes[-24:])
-    if ck in _K29_IMG_CACHE:
-        return _K29_IMG_CACHE[ck]
+def _k29_ram_get(ckey):
+    val = _K29_FAST_RAM.get(ckey)
+    if val is not None:
+        _K29_FAST_RAM.move_to_end(ckey)
+    return val
+
+def _k29_ram_put(ckey, data):
+    _K29_FAST_RAM[ckey] = data
+    _K29_FAST_RAM.move_to_end(ckey)
+    while len(_K29_FAST_RAM) > _K29_RAM_MAX:
+        _K29_FAST_RAM.popitem(last=False)
+
+def _k29_disk_path(ckey):
+    return _OS.path.join(_K29_DISK_DIR, _K29HL.md5(ckey.encode("utf-8", "ignore")).hexdigest() + ".jpg")
+
+def _k29_disk_read(ckey):
+    fp = _k29_disk_path(ckey)
+    if not _OS.path.isfile(fp):
+        return None
     try:
-        im = _K29Img.open(_K29IO.BytesIO(img_bytes)).convert("RGBA")
+        d = open(fp, "rb").read()
+        return d if len(d) > 200 else None
+    except Exception:
+        return None
+
+def _k29_disk_write(ckey, data):
+    try:
+        fp = _k29_disk_path(ckey)
+        tmp = fp + ".tmp"
+        with open(tmp, "wb") as _f:
+            _f.write(data)
+        _OS.replace(tmp, fp)
+        _K29_DISK_WRITES[0] += 1
+        if _K29_DISK_WRITES[0] % 200 == 0:
+            files = [
+                (_OS.path.getmtime(_OS.path.join(_K29_DISK_DIR, fn)), _OS.path.join(_K29_DISK_DIR, fn))
+                for fn in _OS.listdir(_K29_DISK_DIR)
+                if fn.endswith(".jpg")
+            ]
+            if len(files) > 2500:
+                files.sort()
+                for _, old_fp in files[:500]:
+                    try:
+                        _OS.remove(old_fp)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+def _k29_get_lock(ckey):
+    if len(_K29_LOCKS) > 1000:
+        for _k in [k for k, v in list(_K29_LOCKS.items()) if not v.locked()][:500]:
+            _K29_LOCKS.pop(_k, None)
+    lk = _K29_LOCKS.get(ckey)
+    if lk is None:
+        lk = _A.Lock()
+        _K29_LOCKS[ckey] = lk
+    return lk
+
+def _k29_art_headers(etag=None, head_len=None):
+    h = dict(globals().get("_CORS") or {})
+    h["Cache-Control"] = "public, max-age=2592000, immutable"
+    if etag:
+        h["ETag"] = etag
+    if head_len is not None:
+        h["Content-Length"] = str(head_len)
+    return h
+
+def _k29_process_cover(img_bytes, kind, bucket):
+    if not _K29_HAS_PIL or not img_bytes:
+        return img_bytes
+    try:
+        im = _K29Img.open(_K29IO.BytesIO(img_bytes))
         w, h = im.size
-        if min(w, h) < 48:
+        if min(w, h) < 32:
             return img_bytes
-        sz = max(24, int(min(w, h) * 0.20))
-        pad = max(6, int(min(w, h) * 0.035))
-        badge = _k29_make_badge(kind, sz)
-        bw, bh = badge.size
-        im.alpha_composite(badge, (max(0, w - bw - pad), max(0, h - bh - pad)))
+        if max(w, h) > bucket:
+            im.thumbnail((bucket, bucket), _K29_LANCZOS)
+            w, h = im.size
+        if kind and min(w, h) >= 48:
+            im = im.convert("RGBA")
+            sz = max(22, int(min(w, h) * 0.20))
+            pad = max(5, int(min(w, h) * 0.035))
+            badge = _k29_make_badge(kind, sz)
+            bw, bh = badge.size
+            im.alpha_composite(badge, (max(0, w - bw - pad), max(0, h - bh - pad)))
+            im = im.convert("RGB")
+        elif im.mode != "RGB":
+            im = im.convert("RGB")
         buf = _K29IO.BytesIO()
-        im.convert("RGB").save(buf, format="JPEG", quality=92)
-        res = buf.getvalue()
-        if len(_K29_IMG_CACHE) > 350:
-            _K29_IMG_CACHE.clear()
-        _K29_IMG_CACHE[ck] = res
-        return res
+        im.save(buf, format="JPEG", quality=84, optimize=False)
+        return buf.getvalue()
     except Exception:
         return img_bytes
 
 @app.middleware("http")
 async def _k28_unified_clean_and_logo_mw(req, call_next):
     p = _RE.sub(r"/+", "/", req.url.path).lower()
-    if not p.startswith("/rest/") or req.method == "HEAD":
+    if not p.startswith("/rest/"):
         return await call_next(req)
     if any(x in p for x in ("/stream", "/download", "/getavatar", "/hls")):
+        return await call_next(req)
+
+    # 1. Tang toc anh bia (getCoverArt): L1 RAM -> L2 Disk -> Single-flight -> Stamp & Cache
+    if "/getcoverart" in p:
+        qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+        qd = dict(qi)
+        if "_check_auth" in globals() and not _check_auth(qd):
+            return await call_next(req)
+
+        cid = str(qd.get("id") or "").strip()
+        if not cid:
+            return await call_next(req)
+
+        kind = _k29_detect_source(cid)
+        try:
+            _sz_raw = int(str(qd.get("size") or "0").strip())
+        except Exception:
+            _sz_raw = 0
+        bucket = 256 if (0 < _sz_raw <= 280) else 500
+        ckey = f"{cid}|{kind or 'raw'}|{bucket}"
+        etag = '"' + _K29HL.md5(ckey.encode("utf-8", "ignore")).hexdigest()[:16] + '"'
+
+        inm = (req.headers.get("if-none-match") or "").strip()
+        if inm and (inm == etag or etag in inm):
+            if ckey in _K29_FAST_RAM or _OS.path.isfile(_k29_disk_path(ckey)):
+                return _R(status_code=304, headers=_k29_art_headers(etag))
+
+        hit = _k29_ram_get(ckey)
+        if hit:
+            if req.method == "HEAD":
+                return _R(content=b"", status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag, len(hit)))
+            return _R(content=hit, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
+
+        lp = _A.get_running_loop()
+        d_hit = await lp.run_in_executor(_K29_ART_POOL, _k29_disk_read, ckey)
+        if d_hit:
+            _k29_ram_put(ckey, d_hit)
+            if req.method == "HEAD":
+                return _R(content=b"", status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag, len(d_hit)))
+            return _R(content=d_hit, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
+
+        if req.method == "HEAD":
+            return await call_next(req)
+
+        lk = _k29_get_lock(ckey)
+        async with lk:
+            hit2 = _k29_ram_get(ckey)
+            if hit2:
+                return _R(content=hit2, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
+
+            resp = await call_next(req)
+            if resp.status_code != 200:
+                return resp
+            ct = (resp.headers.get("content-type") or "").lower()
+            if ct and "image" not in ct:
+                return resp
+
+            body = getattr(resp, "body", None)
+            if body is None and hasattr(resp, "body_iterator"):
+                chunks = []
+                async for chunk in resp.body_iterator:
+                    chunks.append(chunk)
+                body = b"".join(chunks)
+
+            if not body or len(body) < 100:
+                return _R(content=body or b"", status_code=200, media_type=ct or "image/jpeg", headers=_k29_art_headers())
+
+            out_b = await lp.run_in_executor(_K29_ART_POOL, _k29_process_cover, body, kind, bucket)
+            if out_b and len(out_b) >= 100:
+                _k29_ram_put(ckey, out_b)
+                lp.run_in_executor(_K29_ART_POOL, _k29_disk_write, ckey, out_b)
+                return _R(content=out_b, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
+            return _R(content=body, status_code=200, media_type=ct or "image/jpeg", headers=_k29_art_headers())
+
+    if req.method == "HEAD":
         return await call_next(req)
 
     resp = await call_next(req)
@@ -7737,36 +7895,6 @@ async def _k28_unified_clean_and_logo_mw(req, call_next):
         return resp
 
     ct = (resp.headers.get("content-type") or "").lower()
-
-    # 1. Dong dau logo len anh bia (getCoverArt)
-    if "/getcoverart" in p:
-        if ct and "image" not in ct:
-            return resp
-        qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
-        kind = _k29_detect_source(dict(qi).get("id"))
-        if not kind:
-            return resp
-        consumed = False
-        body = getattr(resp, "body", None)
-        if body is None and hasattr(resp, "body_iterator"):
-            chunks = []
-            async for chunk in resp.body_iterator:
-                chunks.append(chunk)
-            body = b"".join(chunks)
-            consumed = True
-        if not body:
-            if consumed:
-                hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
-                return _R(content=b"", status_code=200, media_type="image/jpeg", headers=hdrs)
-            return resp
-        lp = _A.get_running_loop()
-        out_b = await lp.run_in_executor(_REQ_POOL, _k29_stamp_cover, body, kind)
-        if consumed or out_b != body:
-            hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
-            return _R(content=out_b, status_code=200, media_type="image/jpeg", headers=hdrs)
-        return resp
-
-    # 2. Xoa sach tien to [HDD]/[YT]/[YTM] va ghi nhan nguon nhac cho logo
     if ct and not any(t in ct for t in ("json", "xml", "javascript", "text")):
         return resp
 
@@ -7781,7 +7909,7 @@ async def _k28_unified_clean_and_logo_mw(req, call_next):
 
     if not body:
         if consumed:
-            hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
+            hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type", "transfer-encoding", "content-encoding")}
             return _R(content=b"", status_code=resp.status_code, media_type=resp.headers.get("content-type") or resp.media_type, headers=hdrs)
         return resp
 
@@ -7805,12 +7933,12 @@ async def _k28_unified_clean_and_logo_mw(req, call_next):
 
     if dirty_flag[0]:
         try:
-            _A.get_running_loop().run_in_executor(_REQ_POOL, _k29_save_map)
+            _A.get_running_loop().run_in_executor(_K29_ART_POOL, _k29_save_map)
         except Exception:
             pass
 
     if consumed or out_b != body:
-        hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
+        hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type", "transfer-encoding", "content-encoding")}
         return _R(content=out_b, status_code=resp.status_code, media_type=resp.headers.get("content-type") or resp.media_type, headers=hdrs)
     return resp
 
