@@ -7492,18 +7492,28 @@ except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
 
-# --- K28: V1.8.29 CLEAN ALL TITLE PREFIXES (KEEP EXACT SOURCE TRACKER FOR K29 LOGOS) ---
+# --- K28: V1.8.30 SINGLE-MIDDLEWARE CLEAN TITLES + CRISP SOURCE LOGOS (STABLE 1.8.25 CORE) ---
+import io as _K29IO
+try:
+    from PIL import Image as _K29Img, ImageDraw as _K29Draw
+    _K29_LANCZOS = getattr(getattr(_K29Img, "Resampling", _K29Img), "LANCZOS", _K29Img.BICUBIC)
+    _K29_HAS_PIL = True
+except Exception:
+    _K29_HAS_PIL = False
+
 _K28_DOTS = "\U0001f7e2\U0001f534"
 _K28_HDD_RE = _RE.compile(r"^\s*\[HDD\]\s*", _RE.I)
 _K28_YT_RE = _RE.compile(r"^\s*\[YT\]\s*", _RE.I)
 _K28_YTM_RE = _RE.compile(r"^\s*\[YTM\]\s*", _RE.I)
 _K28_STRIP_RE = _RE.compile(r"^\s*(?:(?:\[(?:HDD|YTM|YT)\]|[" + _K28_DOTS + r"])\s*)+", _RE.I)
-
 _K28_XML_STRIP_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[(?:HDD|YTM|YT)\]\s*', _RE.I)
 _K28_JSONP_STRIP_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[(?:HDD|YTM|YT)\]\s*', _RE.I)
 
 _K29_MAP_FILE = "/data/k29_src_map.json" if _OS.path.isdir("/data") else "/tmp/k29_src_map.json"
 _K29_SRC_MAP = {}
+_K29_ICON_CACHE = {}
+_K29_IMG_CACHE = {}
+
 try:
     if _OS.path.isfile(_K29_MAP_FILE):
         _ld = _J.loads(open(_K29_MAP_FILE, "r", encoding="utf-8").read())
@@ -7518,7 +7528,7 @@ def _k29_save_map():
             for _ok in list(_K29_SRC_MAP.keys())[:1000]:
                 _K29_SRC_MAP.pop(_ok, None)
         with open(_K29_MAP_FILE, "w", encoding="utf-8") as _f:
-            _J.dump(_K29_SRC_MAP, _f)
+            _J.dump(dict(_K29_SRC_MAP), _f)
     except Exception:
         pass
 
@@ -7610,72 +7620,6 @@ def _k28_scan_xml_sources(body_bytes, dirty_flag):
                 _k29_record_src(_cov, _sid, _kd, dirty_flag)
     except Exception:
         pass
-
-@app.middleware("http")
-async def _k28_clean_prefix_mw(req, call_next):
-    resp = await call_next(req)
-    p = _RE.sub(r"/+", "/", req.url.path).lower()
-    if not p.startswith("/rest/") or resp.status_code != 200 or req.method == "HEAD":
-        return resp
-    if any(x in p for x in ("/stream", "/download", "/getcoverart", "/getavatar", "/hls")):
-        return resp
-    ct = (resp.headers.get("content-type") or "").lower()
-    if ct and not any(t in ct for t in ("json", "xml", "javascript", "text")):
-        return resp
-
-    consumed = False
-    body = getattr(resp, "body", None)
-    if body is None and hasattr(resp, "body_iterator"):
-        chunks = []
-        async for chunk in resp.body_iterator:
-            chunks.append(chunk)
-        body = b"".join(chunks)
-        consumed = True
-
-    if not body:
-        if consumed:
-            hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
-            return _R(content=b"", status_code=resp.status_code, media_type=resp.headers.get("content-type") or resp.media_type, headers=hdrs)
-        return resp
-
-    out_b = body
-    dirty_flag = [False]
-    try:
-        bs = body.lstrip()
-        if bs.startswith(b"{"):
-            data = _J.loads(body.decode("utf-8", "ignore"))
-            if _k28_clean_json(data, dirty_flag):
-                out_b = _J.dumps(data, ensure_ascii=False).encode("utf-8")
-        elif bs.startswith(b"<"):
-            _k28_scan_xml_sources(body, dirty_flag)
-            out_b = _K28_XML_STRIP_RE.sub(rb"\1", body)
-        else:
-            lb = body.lower()
-            if b"[ytm]" in lb or b"[hdd]" in lb or b"[yt]" in lb:
-                out_b = _K28_JSONP_STRIP_RE.sub(rb"\1", body)
-    except Exception:
-        out_b = body
-
-    if dirty_flag[0]:
-        _k29_save_map()
-
-    if consumed or out_b != body:
-        hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
-        return _R(content=out_b, status_code=resp.status_code, media_type=resp.headers.get("content-type") or resp.media_type, headers=hdrs)
-    return resp
-
-
-# --- K29: V1.8.28 DISTINCT SOURCE LOGO BADGES (HDD SQUARE / YOUTUBE WIDE RECT / YTMUSIC CIRCLE) ---
-import io as _K29IO
-try:
-    from PIL import Image as _K29Img, ImageDraw as _K29Draw
-    _K29_LANCZOS = getattr(getattr(_K29Img, "Resampling", _K29Img), "LANCZOS", _K29Img.BICUBIC)
-    _K29_HAS_PIL = True
-except Exception:
-    _K29_HAS_PIL = False
-
-_K29_ICON_CACHE = {}
-_K29_IMG_CACHE = {}
 
 def _k29_make_badge(kind, sz):
     ck = (kind, sz)
@@ -7781,18 +7725,49 @@ def _k29_stamp_cover(img_bytes, kind):
         return img_bytes
 
 @app.middleware("http")
-async def _k29_cover_logo_mw(req, call_next):
-    resp = await call_next(req)
+async def _k28_unified_clean_and_logo_mw(req, call_next):
     p = _RE.sub(r"/+", "/", req.url.path).lower()
-    if not p.startswith("/rest/") or "/getcoverart" not in p or resp.status_code != 200 or req.method == "HEAD":
-        return resp
-    ct = (resp.headers.get("content-type") or "").lower()
-    if ct and "image" not in ct:
+    if not p.startswith("/rest/") or req.method == "HEAD":
+        return await call_next(req)
+    if any(x in p for x in ("/stream", "/download", "/getavatar", "/hls")):
+        return await call_next(req)
+
+    resp = await call_next(req)
+    if resp.status_code != 200:
         return resp
 
-    qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
-    kind = _k29_detect_source(dict(qi).get("id"))
-    if not kind:
+    ct = (resp.headers.get("content-type") or "").lower()
+
+    # 1. Dong dau logo len anh bia (getCoverArt)
+    if "/getcoverart" in p:
+        if ct and "image" not in ct:
+            return resp
+        qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+        kind = _k29_detect_source(dict(qi).get("id"))
+        if not kind:
+            return resp
+        consumed = False
+        body = getattr(resp, "body", None)
+        if body is None and hasattr(resp, "body_iterator"):
+            chunks = []
+            async for chunk in resp.body_iterator:
+                chunks.append(chunk)
+            body = b"".join(chunks)
+            consumed = True
+        if not body:
+            if consumed:
+                hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
+                return _R(content=b"", status_code=200, media_type="image/jpeg", headers=hdrs)
+            return resp
+        lp = _A.get_running_loop()
+        out_b = await lp.run_in_executor(_REQ_POOL, _k29_stamp_cover, body, kind)
+        if consumed or out_b != body:
+            hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
+            return _R(content=out_b, status_code=200, media_type="image/jpeg", headers=hdrs)
+        return resp
+
+    # 2. Xoa sach tien to [HDD]/[YT]/[YTM] va ghi nhan nguon nhac cho logo
+    if ct and not any(t in ct for t in ("json", "xml", "javascript", "text")):
         return resp
 
     consumed = False
@@ -7807,14 +7782,36 @@ async def _k29_cover_logo_mw(req, call_next):
     if not body:
         if consumed:
             hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
-            return _R(content=b"", status_code=200, media_type="image/jpeg", headers=hdrs)
+            return _R(content=b"", status_code=resp.status_code, media_type=resp.headers.get("content-type") or resp.media_type, headers=hdrs)
         return resp
 
-    lp = _A.get_running_loop()
-    out_b = await lp.run_in_executor(_REQ_POOL, _k29_stamp_cover, body, kind)
+    out_b = body
+    dirty_flag = [False]
+    try:
+        bs = body.lstrip()
+        if bs.startswith(b"{"):
+            data = _J.loads(body.decode("utf-8", "ignore"))
+            if _k28_clean_json(data, dirty_flag):
+                out_b = _J.dumps(data, ensure_ascii=False).encode("utf-8")
+        elif bs.startswith(b"<"):
+            _k28_scan_xml_sources(body, dirty_flag)
+            out_b = _K28_XML_STRIP_RE.sub(rb"\1", body)
+        else:
+            lb = body.lower()
+            if b"[ytm]" in lb or b"[hdd]" in lb or b"[yt]" in lb:
+                out_b = _K28_JSONP_STRIP_RE.sub(rb"\1", body)
+    except Exception:
+        out_b = body
+
+    if dirty_flag[0]:
+        try:
+            _A.get_running_loop().run_in_executor(_REQ_POOL, _k29_save_map)
+        except Exception:
+            pass
+
     if consumed or out_b != body:
         hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
-        return _R(content=out_b, status_code=200, media_type="image/jpeg", headers=hdrs)
+        return _R(content=out_b, status_code=resp.status_code, media_type=resp.headers.get("content-type") or resp.media_type, headers=hdrs)
     return resp
 
 _SCACHE.clear()
