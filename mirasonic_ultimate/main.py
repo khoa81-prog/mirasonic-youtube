@@ -7492,23 +7492,15 @@ except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
 
-# --- K28: V1.8.28 COMPACT COLOR DOTS (GREEN=HDD, RED=YT, CLEAN=YTM) + EXACT SOURCE TRACKER ---
-_K28_DOT_HDD = "\U0001f7e2 "
-_K28_DOT_YT = "\U0001f534 "
-_K28_DOT_HDD_B = _K28_DOT_HDD.encode("utf-8")
-_K28_DOT_YT_B = _K28_DOT_YT.encode("utf-8")
-
+# --- K28: V1.8.29 CLEAN ALL TITLE PREFIXES (KEEP EXACT SOURCE TRACKER FOR K29 LOGOS) ---
+_K28_DOTS = "\U0001f7e2\U0001f534"
 _K28_HDD_RE = _RE.compile(r"^\s*\[HDD\]\s*", _RE.I)
 _K28_YT_RE = _RE.compile(r"^\s*\[YT\]\s*", _RE.I)
 _K28_YTM_RE = _RE.compile(r"^\s*\[YTM\]\s*", _RE.I)
+_K28_STRIP_RE = _RE.compile(r"^\s*(?:(?:\[(?:HDD|YTM|YT)\]|[" + _K28_DOTS + r"])\s*)+", _RE.I)
 
-_K28_XML_HDD_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[HDD\]\s*', _RE.I)
-_K28_XML_YT_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[YT\]\s*', _RE.I)
-_K28_XML_YTM_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[YTM\]\s*', _RE.I)
-
-_K28_JSONP_HDD_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[HDD\]\s*', _RE.I)
-_K28_JSONP_YT_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[YT\]\s*', _RE.I)
-_K28_JSONP_YTM_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[YTM\]\s*', _RE.I)
+_K28_XML_STRIP_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[(?:HDD|YTM|YT)\]\s*', _RE.I)
+_K28_JSONP_STRIP_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[(?:HDD|YTM|YT)\]\s*', _RE.I)
 
 _K29_MAP_FILE = "/data/k29_src_map.json" if _OS.path.isdir("/data") else "/tmp/k29_src_map.json"
 _K29_SRC_MAP = {}
@@ -7548,18 +7540,10 @@ def _k29_record_src(cov, sid, kind, dirty_flag):
                 dirty_flag[0] = True
 
 def _k28_fmt_title(v):
-    if not isinstance(v, str) or "[" not in v:
+    if not isinstance(v, str) or not v:
         return v
-    if _K28_HDD_RE.match(v):
-        nv = _K28_HDD_RE.sub(_K28_DOT_HDD, v).strip()
-        return nv or v
-    if _K28_YT_RE.match(v):
-        nv = _K28_YT_RE.sub(_K28_DOT_YT, v).strip()
-        return nv or v
-    if _K28_YTM_RE.match(v):
-        nv = _K28_YTM_RE.sub("", v).strip()
-        return nv or v
-    return v
+    nv = _K28_STRIP_RE.sub("", v).strip()
+    return nv or v
 
 def _k28_detect_dict_kind(d):
     for _k in ("title", "name", "album"):
@@ -7589,8 +7573,6 @@ def _k28_clean_json(node, dirty_flag):
             _v = node.get(_k)
             if isinstance(_v, str) and _v:
                 _nv = _k28_fmt_title(_v)
-                if _kind == "hdd" and _k in ("title", "name") and not _nv.startswith(_K28_DOT_HDD):
-                    _nv = _K28_DOT_HDD + _nv
                 if _nv != _v:
                     node[_k] = _nv
                     changed = True
@@ -7630,7 +7612,7 @@ def _k28_scan_xml_sources(body_bytes, dirty_flag):
         pass
 
 @app.middleware("http")
-async def _k28_dot_prefix_mw(req, call_next):
+async def _k28_clean_prefix_mw(req, call_next):
     resp = await call_next(req)
     p = _RE.sub(r"/+", "/", req.url.path).lower()
     if not p.startswith("/rest/") or resp.status_code != 200 or req.method == "HEAD":
@@ -7666,15 +7648,11 @@ async def _k28_dot_prefix_mw(req, call_next):
                 out_b = _J.dumps(data, ensure_ascii=False).encode("utf-8")
         elif bs.startswith(b"<"):
             _k28_scan_xml_sources(body, dirty_flag)
-            tmp_b = _K28_XML_HDD_RE.sub(rb"\1" + _K28_DOT_HDD_B, body)
-            tmp_b = _K28_XML_YT_RE.sub(rb"\1" + _K28_DOT_YT_B, tmp_b)
-            out_b = _K28_XML_YTM_RE.sub(rb"\1", tmp_b)
+            out_b = _K28_XML_STRIP_RE.sub(rb"\1", body)
         else:
             lb = body.lower()
             if b"[ytm]" in lb or b"[hdd]" in lb or b"[yt]" in lb:
-                tmp_b = _K28_JSONP_HDD_RE.sub(rb"\1" + _K28_DOT_HDD_B, body)
-                tmp_b = _K28_JSONP_YT_RE.sub(rb"\1" + _K28_DOT_YT_B, tmp_b)
-                out_b = _K28_JSONP_YTM_RE.sub(rb"\1", tmp_b)
+                out_b = _K28_JSONP_STRIP_RE.sub(rb"\1", body)
     except Exception:
         out_b = body
 
