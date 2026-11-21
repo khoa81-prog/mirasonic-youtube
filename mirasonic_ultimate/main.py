@@ -7492,34 +7492,145 @@ except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
 
-# --- K28: V1.8.26 STRIP ALL TEXT PREFIXES [HDD]/[YT]/[YTM] (LOGOS MOVED TO COVER ART) ---
-_K28_PFX_RE = _RE.compile(r"^\s*\[(?:HDD|YTM|YT)\]\s*", _RE.I)
-_K28_XML_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[(?:HDD|YTM|YT)\]\s*', _RE.I)
-_K28_JSONP_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[(?:HDD|YTM|YT)\]\s*', _RE.I)
+# --- K28: V1.8.28 COMPACT COLOR DOTS (GREEN=HDD, RED=YT, CLEAN=YTM) + EXACT SOURCE TRACKER ---
+_K28_DOT_HDD = "\U0001f7e2 "
+_K28_DOT_YT = "\U0001f534 "
+_K28_DOT_HDD_B = _K28_DOT_HDD.encode("utf-8")
+_K28_DOT_YT_B = _K28_DOT_YT.encode("utf-8")
 
-def _k28_clean_json(node):
+_K28_HDD_RE = _RE.compile(r"^\s*\[HDD\]\s*", _RE.I)
+_K28_YT_RE = _RE.compile(r"^\s*\[YT\]\s*", _RE.I)
+_K28_YTM_RE = _RE.compile(r"^\s*\[YTM\]\s*", _RE.I)
+
+_K28_XML_HDD_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[HDD\]\s*', _RE.I)
+_K28_XML_YT_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[YT\]\s*', _RE.I)
+_K28_XML_YTM_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[YTM\]\s*', _RE.I)
+
+_K28_JSONP_HDD_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[HDD\]\s*', _RE.I)
+_K28_JSONP_YT_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[YT\]\s*', _RE.I)
+_K28_JSONP_YTM_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[YTM\]\s*', _RE.I)
+
+_K29_MAP_FILE = "/data/k29_src_map.json" if _OS.path.isdir("/data") else "/tmp/k29_src_map.json"
+_K29_SRC_MAP = {}
+try:
+    if _OS.path.isfile(_K29_MAP_FILE):
+        _ld = _J.loads(open(_K29_MAP_FILE, "r", encoding="utf-8").read())
+        if isinstance(_ld, dict):
+            _K29_SRC_MAP.update({str(k): str(v) for k, v in _ld.items() if v in ("hdd", "yt", "ytm")})
+except Exception:
+    pass
+
+def _k29_save_map():
+    try:
+        if len(_K29_SRC_MAP) > 4000:
+            for _ok in list(_K29_SRC_MAP.keys())[:1000]:
+                _K29_SRC_MAP.pop(_ok, None)
+        with open(_K29_MAP_FILE, "w", encoding="utf-8") as _f:
+            _J.dump(_K29_SRC_MAP, _f)
+    except Exception:
+        pass
+
+def _k29_record_src(cov, sid, kind, dirty_flag):
+    if kind not in ("hdd", "yt", "ytm"):
+        return
+    for _raw in (cov, sid):
+        _s = str(_raw or "").strip()
+        if not _s:
+            continue
+        if _K29_SRC_MAP.get(_s) != kind:
+            _K29_SRC_MAP[_s] = kind
+            dirty_flag[0] = True
+        _m = _RE.search(r"([A-Za-z0-9_-]{11})$", _s)
+        if _m:
+            _v = _m.group(1)
+            if _K29_SRC_MAP.get(_v) != kind:
+                _K29_SRC_MAP[_v] = kind
+                dirty_flag[0] = True
+
+def _k28_fmt_title(v):
+    if not isinstance(v, str) or "[" not in v:
+        return v
+    if _K28_HDD_RE.match(v):
+        nv = _K28_HDD_RE.sub(_K28_DOT_HDD, v).strip()
+        return nv or v
+    if _K28_YT_RE.match(v):
+        nv = _K28_YT_RE.sub(_K28_DOT_YT, v).strip()
+        return nv or v
+    if _K28_YTM_RE.match(v):
+        nv = _K28_YTM_RE.sub("", v).strip()
+        return nv or v
+    return v
+
+def _k28_detect_dict_kind(d):
+    for _k in ("title", "name", "album"):
+        _v = d.get(_k)
+        if isinstance(_v, str) and "[" in _v:
+            if _K28_HDD_RE.match(_v):
+                return "hdd"
+            if _K28_YT_RE.match(_v):
+                return "yt"
+            if _K28_YTM_RE.match(_v):
+                return "ytm"
+    _id_l = str(d.get("id") or "").lower()
+    _cv_l = str(d.get("coverArt") or "").lower()
+    if _id_l.startswith("hdd") or _cv_l.startswith("hdd"):
+        return "hdd"
+    return ""
+
+def _k28_clean_json(node, dirty_flag):
     changed = False
     if isinstance(node, dict):
+        _nid = str(node.get("id") or "").lower()
+        _is_art = ("albumCount" in node) or _nid.startswith(("ar_", "hdd_ar", "artist_"))
+        _kind = "" if _is_art else _k28_detect_dict_kind(node)
+        if _kind:
+            _k29_record_src(node.get("coverArt"), node.get("id"), _kind, dirty_flag)
         for _k in ("title", "name", "album"):
             _v = node.get(_k)
-            if isinstance(_v, str) and "[" in _v:
-                _nv = _K28_PFX_RE.sub("", _v).strip()
-                if _nv and _nv != _v:
+            if isinstance(_v, str) and _v:
+                _nv = _k28_fmt_title(_v)
+                if _kind == "hdd" and _k in ("title", "name") and not _nv.startswith(_K28_DOT_HDD):
+                    _nv = _K28_DOT_HDD + _nv
+                if _nv != _v:
                     node[_k] = _nv
                     changed = True
         for _val in node.values():
             if isinstance(_val, (dict, list)):
-                if _k28_clean_json(_val):
+                if _k28_clean_json(_val, dirty_flag):
                     changed = True
     elif isinstance(node, list):
         for _it in node:
             if isinstance(_it, (dict, list)):
-                if _k28_clean_json(_it):
+                if _k28_clean_json(_it, dirty_flag):
                     changed = True
     return changed
 
+def _k28_scan_xml_sources(body_bytes, dirty_flag):
+    try:
+        _txt = body_bytes.decode("utf-8", "ignore")
+        for _tag in _RE.findall(r"<(?:song|album|child|entry|directory|playlist)\b[^>]+>", _txt):
+            _m_cov = _RE.search(r'coverArt="([^"]+)"', _tag)
+            _m_id = _RE.search(r'\bid="([^"]+)"', _tag)
+            _m_t = _RE.search(r'(?:title|name)="([^"]+)"', _tag)
+            if not (_m_cov or _m_id):
+                continue
+            _cov = _m_cov.group(1) if _m_cov else ""
+            _sid = _m_id.group(1) if _m_id else ""
+            _tit = _m_t.group(1) if _m_t else ""
+            _kd = ""
+            if _K28_HDD_RE.match(_tit) or _cov.lower().startswith("hdd") or _sid.lower().startswith("hdd"):
+                _kd = "hdd"
+            elif _K28_YT_RE.match(_tit):
+                _kd = "yt"
+            elif _K28_YTM_RE.match(_tit):
+                _kd = "ytm"
+            if _kd:
+                _k29_record_src(_cov, _sid, _kd, dirty_flag)
+    except Exception:
+        pass
+
 @app.middleware("http")
-async def _k28_strip_all_prefixes_mw(req, call_next):
+async def _k28_dot_prefix_mw(req, call_next):
     resp = await call_next(req)
     p = _RE.sub(r"/+", "/", req.url.path).lower()
     if not p.startswith("/rest/") or resp.status_code != 200 or req.method == "HEAD":
@@ -7546,20 +7657,29 @@ async def _k28_strip_all_prefixes_mw(req, call_next):
         return resp
 
     out_b = body
+    dirty_flag = [False]
     try:
-        lb = body.lower()
-        if b"[ytm]" in lb or b"[hdd]" in lb or b"[yt]" in lb:
-            bs = body.lstrip()
-            if bs.startswith(b"{"):
-                data = _J.loads(body.decode("utf-8", "ignore"))
-                if _k28_clean_json(data):
-                    out_b = _J.dumps(data, ensure_ascii=False).encode("utf-8")
-            elif bs.startswith(b"<"):
-                out_b = _K28_XML_RE.sub(rb"\1", body)
-            else:
-                out_b = _K28_JSONP_RE.sub(rb"\1", body)
+        bs = body.lstrip()
+        if bs.startswith(b"{"):
+            data = _J.loads(body.decode("utf-8", "ignore"))
+            if _k28_clean_json(data, dirty_flag):
+                out_b = _J.dumps(data, ensure_ascii=False).encode("utf-8")
+        elif bs.startswith(b"<"):
+            _k28_scan_xml_sources(body, dirty_flag)
+            tmp_b = _K28_XML_HDD_RE.sub(rb"\1" + _K28_DOT_HDD_B, body)
+            tmp_b = _K28_XML_YT_RE.sub(rb"\1" + _K28_DOT_YT_B, tmp_b)
+            out_b = _K28_XML_YTM_RE.sub(rb"\1", tmp_b)
+        else:
+            lb = body.lower()
+            if b"[ytm]" in lb or b"[hdd]" in lb or b"[yt]" in lb:
+                tmp_b = _K28_JSONP_HDD_RE.sub(rb"\1" + _K28_DOT_HDD_B, body)
+                tmp_b = _K28_JSONP_YT_RE.sub(rb"\1" + _K28_DOT_YT_B, tmp_b)
+                out_b = _K28_JSONP_YTM_RE.sub(rb"\1", tmp_b)
     except Exception:
         out_b = body
+
+    if dirty_flag[0]:
+        _k29_save_map()
 
     if consumed or out_b != body:
         hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type")}
@@ -7567,7 +7687,7 @@ async def _k28_strip_all_prefixes_mw(req, call_next):
     return resp
 
 
-# --- K29: V1.8.26 CRISP SOURCE LOGO BADGES (HDD / YOUTUBE / YOUTUBE MUSIC) ON COVER ART ---
+# --- K29: V1.8.28 DISTINCT SOURCE LOGO BADGES (HDD SQUARE / YOUTUBE WIDE RECT / YTMUSIC CIRCLE) ---
 import io as _K29IO
 try:
     from PIL import Image as _K29Img, ImageDraw as _K29Draw
@@ -7585,22 +7705,22 @@ def _k29_make_badge(kind, sz):
         return _K29_ICON_CACHE[ck]
     S = 4
     if kind == "yt":
-        W, H = int(sz * 1.28 * S), int(sz * 0.90 * S)
+        W, H = int(sz * 1.44 * S), int(sz * 0.94 * S)
         im = _K29Img.new("RGBA", (W, H), (0, 0, 0, 0))
         d = _K29Draw.Draw(im)
-        d.rounded_rectangle((2, 2, W - 2, H - 2), radius=int(H * 0.27), fill=(0, 0, 0, 145))
-        d.rounded_rectangle((6, 6, W - 6, H - 6), radius=int(H * 0.24), fill=(255, 0, 0, 255), outline=(255, 255, 255, 225), width=max(2, S))
-        cx, cy, r = W * 0.52, H * 0.50, H * 0.24
-        d.polygon([(cx - r * 0.72, cy - r * 0.90), (cx - r * 0.72, cy + r * 0.90), (cx + r * 0.98, cy)], fill=(255, 255, 255, 255))
+        d.rounded_rectangle((2, 2, W - 2, H - 2), radius=int(H * 0.28), fill=(0, 0, 0, 155))
+        d.rounded_rectangle((6, 6, W - 6, H - 6), radius=int(H * 0.25), fill=(255, 0, 0, 255), outline=(255, 255, 255, 235), width=max(2, S))
+        cx, cy, r = W * 0.52, H * 0.50, H * 0.26
+        d.polygon([(cx - r * 0.72, cy - r * 0.90), (cx - r * 0.72, cy + r * 0.90), (cx + r * 1.02, cy)], fill=(255, 255, 255, 255))
         out = im.resize((max(1, W // S), max(1, H // S)), _K29_LANCZOS)
     elif kind == "ytm":
         W = H = sz * S
         im = _K29Img.new("RGBA", (W, H), (0, 0, 0, 0))
         d = _K29Draw.Draw(im)
-        d.ellipse((2, 2, W - 2, H - 2), fill=(0, 0, 0, 145))
-        d.ellipse((6, 6, W - 6, H - 6), fill=(255, 0, 0, 255), outline=(255, 255, 255, 225), width=max(2, S))
+        d.ellipse((2, 2, W - 2, H - 2), fill=(0, 0, 0, 155))
+        d.ellipse((6, 6, W - 6, H - 6), fill=(240, 0, 0, 255), outline=(255, 255, 255, 235), width=max(2, S))
         m = int(W * 0.20)
-        d.ellipse((m, m, W - m, H - m), outline=(255, 255, 255, 255), width=max(3, int(W * 0.048)))
+        d.ellipse((m, m, W - m, H - m), outline=(255, 255, 255, 255), width=max(3, int(W * 0.052)))
         cx, cy, r = W * 0.52, H * 0.50, W * 0.165
         d.polygon([(cx - r * 0.72, cy - r * 0.90), (cx - r * 0.72, cy + r * 0.90), (cx + r * 0.98, cy)], fill=(255, 255, 255, 255))
         out = im.resize((sz, sz), _K29_LANCZOS)
@@ -7608,8 +7728,8 @@ def _k29_make_badge(kind, sz):
         W = H = sz * S
         im = _K29Img.new("RGBA", (W, H), (0, 0, 0, 0))
         d = _K29Draw.Draw(im)
-        d.rounded_rectangle((2, 2, W - 2, H - 2), radius=int(W * 0.25), fill=(0, 0, 0, 145))
-        d.rounded_rectangle((6, 6, W - 6, H - 6), radius=int(W * 0.22), fill=(0, 176, 107, 255), outline=(255, 255, 255, 225), width=max(2, S))
+        d.rounded_rectangle((2, 2, W - 2, H - 2), radius=int(W * 0.25), fill=(0, 0, 0, 155))
+        d.rounded_rectangle((6, 6, W - 6, H - 6), radius=int(W * 0.22), fill=(0, 176, 107, 255), outline=(255, 255, 255, 235), width=max(2, S))
         sw = max(3, int(W * 0.052))
         d.rounded_rectangle((int(W * 0.23), int(H * 0.17), int(W * 0.77), int(H * 0.83)), radius=int(W * 0.08), outline=(255, 255, 255, 255), width=sw)
         cx, cy, pr = W * 0.50, H * 0.42, W * 0.145
@@ -7630,19 +7750,29 @@ def _k29_detect_source(cid):
         return None
     if sl.startswith("hdd"):
         return "hdd"
+    if s in _K29_SRC_MAP:
+        return _K29_SRC_MAP[s]
     m = _RE.search(r"([A-Za-z0-9_-]{11})$", s)
     vid = m.group(1) if m else ""
+    if vid and vid in _K29_SRC_MAP:
+        return _K29_SRC_MAP[vid]
     if vid:
         sd = _YL.get(vid)
         if isinstance(sd, dict):
             tl = str(sd.get("title") or "").lower()
-            if "[yt]" in tl:
+            al = str(sd.get("album") or "").lower()
+            pl = str(sd.get("path") or "").lower()
+            if "[yt]" in tl or "[yt]" in al or sd.get("is_vid") is True:
                 return "yt"
-            if "[ytm]" in tl:
+            if "[ytm]" in tl or "[ytm]" in al:
                 return "ytm"
-        if vid in _YTM_THUMB:
+            if "youtube/" in pl and "youtube music" not in pl:
+                return "yt"
+        tu = str(_YTM_THUMB.get(vid) or "").lower()
+        if "googleusercontent.com" in tu or "ggpht.com" in tu:
             return "ytm"
-    if sl.startswith(("yt", "al_", "realalb_")) or vid:
+        return "yt"
+    if sl.startswith(("yt", "al_", "realalb_")):
         return "ytm"
     return None
 
