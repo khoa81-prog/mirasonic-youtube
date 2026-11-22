@@ -5079,6 +5079,11 @@ def _record_hdd_play_for_user(u, sid):
     if u:
         _record_u_hdd_strict(u, sid)
 
+def _artist_id(name):
+    import hashlib as _h
+    s = str(name or "Unknown").strip().lower()
+    return "ar_" + _h.md5(s.encode("utf-8", "ignore")).hexdigest()[:12]
+
 def _u_item_to_album_node(u, item_k):
     p = _get_u_prof(u)
     p_cnt = str((p.get("counts") or {}).get(item_k, 1))
@@ -7540,7 +7545,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.37 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
+# --- K28: V1.8.38 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
