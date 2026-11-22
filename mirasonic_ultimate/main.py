@@ -3478,7 +3478,8 @@ def _get_direct_yt_url(vid):
 # --- ENGINE 1: TRUE 256KBPS FRAGMENTED M4A (OPUS 251 -> 256K AAC + SIDX SEEK BAR) ---
 def _ens_m4a_256(vid):
     mp = _OS.path.join(_AUD_DIR, f"{vid}_256.m4a")
-    dur_v = int((_YL.get(vid) or {}).get("duration") or 240) if str((_YL.get(vid) or {}).get("duration","")).isdigit() else 240
+    dur_raw = (_YL.get(vid) or {}).get("duration")
+    dur_v = int(dur_raw) if str(dur_raw or "").isdigit() and int(dur_raw) > 0 else 240
     est_sz = max(dur_v * 32000, 128000)
 
     if _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536 and (vid not in _M4A_256_JOBS or _M4A_256_JOBS[vid]["d"]):
@@ -3492,31 +3493,72 @@ def _ens_m4a_256(vid):
 
     j = {"p": mp, "d": False, "total_sz": est_sz}
     _M4A_256_JOBS[vid] = j
-    # No duplicate yt-dlp on start
 
     def _run():
         try:
-            c1 = [
-                "yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate",
-                "--concurrent-fragments", "4", "-f", "141/774/251/140/bestaudio/best",
-                "-o", "-", f"https://www.youtube.com/watch?v={vid}"
-            ]
-            # Dong goi luong Opus 251 sang M4A AAC 256kbps CBR that su voi bang muc luc frag_keyframe+empty_moov
-            c2 = [
-                "ffmpeg", "-y", "-loglevel", "error", "-threads", "2",
-                "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100",
-                "-c:a", "aac", "-b:a", "256k",
-                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-                "-frag_duration", "1000000", "-f", "ipod", mp
-            ]
-            p1 = _SP.Popen(c1, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
-            p2 = _SP.Popen(c2, stdin=p1.stdout, stdout=_SP.DEVNULL, stderr=_SP.DEVNULL)
-            p1.stdout.close()
-            p2.communicate(timeout=3600)
-            if _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536:
-                j["total_sz"] = _OS.path.getsize(mp)
-                if vid in _YL:
-                    _YL[vid]["size"] = str(j["total_sz"])
+            for _att in range(2):
+                try:
+                    if _OS.path.exists(mp):
+                        _OS.remove(mp)
+                except Exception:
+                    pass
+                c1 = [
+                    "yt-dlp", "--no-playlist", "--no-warnings", "-q",
+                    "--no-check-certificate", "--force-ipv4",
+                    "--socket-timeout", "15", "--retries", "3", "--fragment-retries", "3",
+                    "-f", "141/774/251/140/bestaudio/best",
+                    "-o", "-", f"https://www.youtube.com/watch?v={vid}",
+                ]
+                c2 = [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100",
+                    "-c:a", "aac", "-b:a", "256k",
+                    "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                    "-frag_duration", "1000000", "-f", "ipod", mp,
+                ]
+                p1 = None
+                p2 = None
+                stalled = False
+                try:
+                    p1 = _SP.Popen(c1, stdout=_SP.PIPE, stderr=_SP.DEVNULL)
+                    p2 = _SP.Popen(c2, stdin=p1.stdout, stdout=_SP.DEVNULL, stderr=_SP.DEVNULL)
+                    p1.stdout.close()
+
+                    t_start = _TM.time()
+                    last_grow = t_start
+                    last_sz = 0
+                    while p2.poll() is None:
+                        _TM.sleep(0.5)
+                        now = _TM.time()
+                        cur_sz = _OS.path.getsize(mp) if _OS.path.exists(mp) else 0
+                        if cur_sz > last_sz:
+                            last_sz = cur_sz
+                            last_grow = now
+                        elif (now - last_grow) > 25 or (now - t_start) > 600:
+                            stalled = True
+                            break
+                finally:
+                    for _pr in (p1, p2):
+                        if _pr is not None:
+                            try:
+                                if _pr.poll() is None:
+                                    _pr.kill()
+                                _pr.wait(timeout=2)
+                            except Exception:
+                                pass
+
+                ok_rc = (not stalled) and (p2 is not None and p2.returncode == 0)
+                if ok_rc and _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536:
+                    j["total_sz"] = _OS.path.getsize(mp)
+                    if vid in _YL:
+                        _YL[vid]["size"] = str(j["total_sz"])
+                    break
+                try:
+                    if _OS.path.exists(mp):
+                        _OS.remove(mp)
+                except Exception:
+                    pass
+                _TM.sleep(0.5)
         except Exception:
             pass
         finally:
@@ -7498,7 +7540,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.36 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
+# --- K28: V1.8.37 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
