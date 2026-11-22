@@ -7491,7 +7491,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.32 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
+# --- K28: V1.8.34 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
@@ -7811,6 +7811,262 @@ def _k29_process_cover(img_bytes, kind, bucket):
     except Exception:
         return img_bytes
 
+# --- K30: V1.8.34 LANGUAGE WHITELIST (EN/FR/ZH/VI) + VIETNAMESE ARTIST RADIO LOCK ---
+import time as _K30T
+
+_K30_BAD_SCRIPT_RE = _RE.compile(
+    r"[\u0370-\u03ff\u0400-\u052f\u0530-\u058f\u0590-\u06ff"
+    r"\u0900-\u0eff\u10a0-\u10ff\u1100-\u11ff\u3040-\u30ff"
+    r"\u3130-\u318f\uac00-\ud7af]"
+)
+_K30_ALLOWED_LATIN = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "\u00c0\u00c1\u00c2\u00c3\u00c4\u00c6\u00c7\u00c8\u00c9\u00ca\u00cb"
+    "\u00cc\u00cd\u00ce\u00cf\u00d0\u00d2\u00d3\u00d4\u00d5\u00d6\u00d9"
+    "\u00da\u00db\u00dc\u00dd\u00e0\u00e1\u00e2\u00e3\u00e4\u00e6\u00e7"
+    "\u00e8\u00e9\u00ea\u00eb\u00ec\u00ed\u00ee\u00ef\u00f0\u00f2\u00f3"
+    "\u00f4\u00f5\u00f6\u00f9\u00fa\u00fb\u00fc\u00fd\u00ff\u0102\u0103"
+    "\u0110\u0111\u0128\u0129\u0152\u0153\u0168\u0169\u0178\u01a0\u01a1"
+    "\u01af\u01b0"
+)
+_K30_BAD_WORDS_RE = _RE.compile(
+    r"(?i)(?:^|\b)(?:canci[o\u00f3]n|coraz[o\u00f3]n|nosotros|siempre|quiero|estoy|"
+    r"porque|cuando|noche|te\s+amo|mi\s+vida|esto\s+no\s+es|ich\s+bin|nicht|und\s+du)(?:\b|$)"
+)
+_K30_VN_EX_RE = _RE.compile(
+    r"[\u0102\u0103\u0110\u0111\u0128\u0129\u0168\u0169\u01a0\u01a1\u01af\u01b0\u1ea0-\u1ef9\u00c3\u00e3\u00d5\u00f5\u00dd\u00fd]"
+)
+_K30_VN_HINT_RE = _RE.compile(
+    r"(?i)(?:th[u\u00f9]y|ng[o\u1ecd]c|qu[y\u1ef3]nh|h[u\u01b0][o\u01a1]ng|nguy[e\u1ec5]n|tr[i\u1ecb]nh|ph[u\u01b0][o\u01a1]ng|"
+    r"tu[a\u1ea5]n|d[u\u0169]ng|kh[a\u00e1]nh|quy[e\u00ea]n|ki[e\u1ec1]u|tr[u\u01b0][o\u1edd]ng|"
+    r"b[a\u1eb1]ng|m[a\u1ea1]nh|l[e\u1ec7]|v[o\u00f5]|v[u\u0169]|\u00f9y|\u00fay|\u00f9i|\u00fai|\u00f2a|\u00f3a)"
+)
+
+_K30_YTM_CLIENT = [None]
+_K30_ARTIST_CACHE = {}
+
+def _k30_is_vn_text(s):
+    if not s:
+        return False
+    return bool(_K30_VN_EX_RE.search(s) or _K30_VN_HINT_RE.search(s))
+
+def _k30_is_allowed_track(title, artist, tid="", cov=""):
+    tl = str(tid or "").lower()
+    cl = str(cov or "").lower()
+    if tl.startswith("hdd") or cl.startswith("hdd"):
+        return True
+    s = f"{title or ''} {artist or ''}".strip()
+    if not s:
+        return True
+    if _K30_BAD_SCRIPT_RE.search(s):
+        return False
+    if _K30_BAD_WORDS_RE.search(s):
+        return False
+    for ch in s:
+        o = ord(ch)
+        if 0x0080 <= o <= 0x024F or 0x1E00 <= o <= 0x1EFF:
+            if 0x1EA0 <= o <= 0x1EF9:
+                continue
+            if ch not in _K30_ALLOWED_LATIN and ch.isalpha():
+                return False
+    return True
+
+def _k30_parse_dur(val):
+    if isinstance(val, (int, float)):
+        return int(val)
+    s = str(val or "").strip()
+    if not s or ":" not in s:
+        return 210
+    try:
+        parts = [int(x) for x in s.split(":")]
+        if len(parts) == 2:
+            return parts[0] * 60 + parts[1]
+        if len(parts) == 3:
+            return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    except Exception:
+        pass
+    return 210
+
+def _k30_fetch_artist_songs(artist_name):
+    ck = artist_name.strip().lower()
+    now = _K30T.time()
+    cached = _K30_ARTIST_CACHE.get(ck)
+    if cached and (now - cached[0]) < 21600:
+        return cached[1]
+    res = []
+    try:
+        ytm = _K30_YTM_CLIENT[0]
+        if ytm is None:
+            from ytmusicapi import YTMusic as _K30YTM
+            ytm = _K30YTM()
+            _K30_YTM_CLIENT[0] = ytm
+        raw = ytm.search(artist_name, filter="songs", limit=15) or []
+        al = ck
+        for it in raw:
+            vid = str(it.get("videoId") or "").strip()
+            tit = str(it.get("title") or "").strip()
+            if not vid or len(vid) != 11 or not tit:
+                continue
+            arts = [str(a.get("name") or "").strip() for a in (it.get("artists") or []) if isinstance(a, dict) and a.get("name")]
+            art_str = ", ".join(arts) or artist_name
+            if al not in art_str.lower() and not _k30_is_vn_text(art_str):
+                continue
+            if not _k30_is_allowed_track(tit, art_str):
+                continue
+            dur = _k30_parse_dur(it.get("duration_seconds") or it.get("duration"))
+            thumbs = it.get("thumbnails") or []
+            turl = str(thumbs[-1].get("url") or "") if thumbs and isinstance(thumbs[-1], dict) else ""
+            alb_obj = it.get("album")
+            alb_name = str(alb_obj.get("name") or "").strip() if isinstance(alb_obj, dict) else ""
+            res.append({"vid": vid, "title": tit, "artist": art_str, "album": alb_name, "duration": dur, "thumb": turl})
+            if len(res) >= 10:
+                break
+    except Exception:
+        res = []
+    if len(_K30_ARTIST_CACHE) > 200:
+        _K30_ARTIST_CACHE.clear()
+    _K30_ARTIST_CACHE[ck] = (now, res)
+    return res
+
+def _k30_extract_vid(s):
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", str(s or "").strip())
+    return m.group(1) if m else ""
+
+def _k30_id_prefix(sample_id):
+    s = str(sample_id or "").strip()
+    m = _RE.search(r"([A-Za-z0-9_-]{11})$", s)
+    if m:
+        return s[:m.start()]
+    return "yt:"
+
+async def _k30_filter_json_tracks(data, path_l):
+    if not any(k in path_l for k in ("/getalbum", "/getmusicdirectory", "/getsimilarsongs")):
+        return False
+    if "getalbumlist" in path_l or "getalbuminfo" in path_l:
+        return False
+    sr = data.get("subsonic-response") if isinstance(data, dict) else None
+    if not isinstance(sr, dict):
+        return False
+    changed = False
+    for parent_k, list_k in (("album", "song"), ("directory", "child"), ("similarSongs", "song"), ("similarSongs2", "song")):
+        par = sr.get(parent_k)
+        if not isinstance(par, dict):
+            continue
+        arr = par.get(list_k)
+        if not isinstance(arr, list) or len(arr) <= 2:
+            continue
+
+        # 1. Loc ngon ngu (chi giu Anh / Phap / Trung / Viet)
+        kept = []
+        for idx, tr in enumerate(arr):
+            if not isinstance(tr, dict):
+                kept.append(tr)
+                continue
+            if idx == 0 or _k30_is_allowed_track(tr.get("title") or tr.get("name"), tr.get("artist"), tr.get("id"), tr.get("coverArt")):
+                kept.append(tr)
+        if len(kept) < len(arr) and len(kept) >= 1:
+            changed = True
+
+        # 2. Khoa gu theo ca si Viet cho danh sach Radio tron nhieu ca si
+        seed = kept[0] if kept and isinstance(kept[0], dict) else None
+        if seed:
+            seed_id = str(seed.get("id") or "")
+            seed_art = str(seed.get("artist") or "").strip()
+            distinct_arts = {str(x.get("artist") or "").strip().lower() for x in kept if isinstance(x, dict) and x.get("artist")}
+            is_hdd_seed = seed_id.lower().startswith("hdd") or str(seed.get("coverArt") or "").lower().startswith("hdd")
+            if (not is_hdd_seed) and len(distinct_arts) >= 3 and _k30_is_vn_text(seed_art):
+                sa_l = seed_art.lower()
+                rest = [x for x in kept[1:] if isinstance(x, dict)]
+                same_art = [x for x in rest if sa_l in str(x.get("artist") or "").lower()]
+                vn_other = [x for x in rest if x not in same_art and _k30_is_vn_text(f"{x.get('artist') or ''} {x.get('title') or ''}")]
+                foreign_ok = [x for x in rest if x not in same_art and x not in vn_other]
+
+                seen_vids = {_k30_extract_vid(x.get("id")) for x in kept if isinstance(x, dict)}
+                seen_tits = {str(x.get("title") or "").strip().lower() for x in kept if isinstance(x, dict)}
+
+                # Keo them bai cua chinh ca si goc neu Radio co it hon 5 bai cung ca si
+                injected = []
+                if len(same_art) < 5:
+                    try:
+                        lp = _A.get_running_loop()
+                        extra = await _A.wait_for(lp.run_in_executor(_K29_ART_POOL, _k30_fetch_artist_songs, seed_art), timeout=2.5)
+                    except Exception:
+                        extra = []
+                    id_pfx = _k30_id_prefix(seed_id)
+                    cov_pfx = _k30_id_prefix(seed.get("coverArt") or seed_id)
+                    yl_dict = globals().get("_YL")
+                    ytm_th = globals().get("_YTM_THUMB")
+                    for ex in extra:
+                        vid = ex["vid"]
+                        tl_k = ex["title"].lower()
+                        if vid in seen_vids or tl_k in seen_tits:
+                            continue
+                        seen_vids.add(vid)
+                        seen_tits.add(tl_k)
+                        nt = dict(seed)
+                        nt["id"] = id_pfx + vid
+                        nt["coverArt"] = cov_pfx + vid
+                        nt["title"] = ex["title"]
+                        nt["artist"] = ex["artist"]
+                        if ex["album"]:
+                            nt["album"] = ex["album"]
+                        nt["duration"] = ex["duration"]
+                        if isinstance(yl_dict, dict) and vid not in yl_dict:
+                            yl_dict[vid] = {"title": ex["title"], "artist": ex["artist"], "album": ex["album"] or seed.get("album") or "", "duration": ex["duration"]}
+                        if isinstance(ytm_th, dict) and ex["thumb"] and vid not in ytm_th:
+                            ytm_th[vid] = ex["thumb"]
+                        _K29_SRC_MAP[nt["coverArt"]] = "ytm"
+                        _K29_SRC_MAP[vid] = "ytm"
+                        injected.append(nt)
+                        if len(same_art) + len(injected) >= 8:
+                            break
+
+                new_kept = [seed] + same_art + injected + vn_other + foreign_ok
+                if new_kept != kept:
+                    kept = new_kept
+                    changed = True
+
+        if changed:
+            par[list_k] = kept
+            if "songCount" in par:
+                par["songCount"] = len(kept)
+    return changed
+
+def _k30_filter_xml_tracks(body_bytes, path_l):
+    if not any(k in path_l for k in ("/getalbum", "/getmusicdirectory", "/getsimilarsongs")):
+        return body_bytes
+    if "getalbumlist" in path_l or "getalbuminfo" in path_l:
+        return body_bytes
+    try:
+        rt = _E.fromstring(body_bytes)
+        changed = False
+        for par in rt.iter():
+            tag = par.tag.split("}")[-1]
+            if tag not in ("album", "directory", "similarSongs", "similarSongs2"):
+                continue
+            kids = list(par)
+            if len(kids) <= 2:
+                continue
+            removed = 0
+            for idx, ch in enumerate(kids):
+                if idx == 0:
+                    continue
+                ctag = ch.tag.split("}")[-1]
+                if ctag not in ("song", "child"):
+                    continue
+                if not _k30_is_allowed_track(ch.attrib.get("title") or ch.attrib.get("name"), ch.attrib.get("artist"), ch.attrib.get("id"), ch.attrib.get("coverArt")):
+                    par.remove(ch)
+                    removed += 1
+            if removed:
+                changed = True
+                if "songCount" in par.attrib:
+                    par.attrib["songCount"] = str(len(list(par)))
+        if changed:
+            return _E.tostring(rt, encoding="utf-8")
+    except Exception:
+        pass
+    return body_bytes
+
 @app.middleware("http")
 async def _k28_unified_clean_and_logo_mw(req, call_next):
     p = _RE.sub(r"/+", "/", req.url.path).lower()
@@ -7925,11 +8181,14 @@ async def _k28_unified_clean_and_logo_mw(req, call_next):
         bs = body.lstrip()
         if bs.startswith(b"{"):
             data = _J.loads(body.decode("utf-8", "ignore"))
-            if _k28_clean_json(data, dirty_flag):
+            c1 = _k28_clean_json(data, dirty_flag)
+            c2 = await _k30_filter_json_tracks(data, p)
+            if c1 or c2:
                 out_b = _J.dumps(data, ensure_ascii=False).encode("utf-8")
         elif bs.startswith(b"<"):
             _k28_scan_xml_sources(body, dirty_flag)
-            out_b = _K28_XML_STRIP_RE.sub(rb"\1", body)
+            tmp_xml = _K28_XML_STRIP_RE.sub(rb"\1", body)
+            out_b = _k30_filter_xml_tracks(tmp_xml, p)
         else:
             lb = body.lower()
             if b"[ytm]" in lb or b"[hdd]" in lb or b"[yt]" in lb:
