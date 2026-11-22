@@ -3665,13 +3665,14 @@ async def _k12_seek_mw(req, call_next):
         seek_sec = t_off if t_off > 0 else (st_b / 32000.0)
         async def _ffmpeg_seek_stream(sec, max_bytes):
             sent = 0
-            u_out = await lp.run_in_executor(_DL_POOL, _get_direct_yt_url, vid)
-            if u_out:
-                c2 = [
-                    "ffmpeg", "-loglevel", "error", "-ss", f"{sec:.2f}",
-                    "-i", u_out, "-vn", "-ac", "2", "-ar", "44100",
-                    "-c:a", f_codec, "-b:a", "256k"
-                ]
+            for _att in range(2):
+                u_out = await lp.run_in_executor(_DL_POOL, _get_direct_yt_url, vid)
+                if not u_out:
+                    continue
+                c2 = ["ffmpeg", "-loglevel", "error"]
+                if str(u_out).startswith("http"):
+                    c2.extend(["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"])
+                c2.extend(["-ss", f"{sec:.2f}", "-i", u_out, "-vn", "-ac", "2", "-ar", "44100", "-c:a", f_codec, "-b:a", "256k"])
                 if is_cast:
                     c2.extend(["-write_xing", "0", "-id3v2_version", "0", "-f", "mp3", "pipe:1"])
                 else:
@@ -3688,6 +3689,12 @@ async def _k12_seek_mw(req, call_next):
                 finally:
                     try: p2.kill()
                     except Exception: pass
+                if sent > 0:
+                    break
+                for _cn in ("_DIRECT_URL_CACHE", "_YT_URL_CACHE", "_URL_CACHE", "_DIRECT_CACHE"):
+                    _cd = globals().get(_cn)
+                    if isinstance(_cd, dict):
+                        _cd.pop(vid, None)
             while sent < max_bytes:
                 pad = min(32768, max_bytes - sent)
                 yield b"\x00" * pad
@@ -7491,7 +7498,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.34 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
+# --- K28: V1.8.35 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
@@ -8067,144 +8074,185 @@ def _k30_filter_xml_tracks(body_bytes, path_l):
         pass
     return body_bytes
 
-@app.middleware("http")
-async def _k28_unified_clean_and_logo_mw(req, call_next):
-    p = _RE.sub(r"/+", "/", req.url.path).lower()
-    if not p.startswith("/rest/"):
-        return await call_next(req)
-    if any(x in p for x in ("/stream", "/download", "/getavatar", "/hls", "/ping", "/getlicense", "/getuser", "/scrobble")):
-        return await call_next(req)
+import inspect as _K28INS
 
-    # 1. Tang toc anh bia (getCoverArt): L1 RAM -> L2 Disk -> Single-flight + Gioi han tai mang dong thoi
-    if "/getcoverart" in p:
-        qi = list(_pq(req.scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
-        qd = dict(qi)
-        if "_check_auth" in globals() and not _check_auth(qd):
-            return await call_next(req)
+class _K28ASGIMiddleware:
+    def __init__(self, app):
+        self.app = app
 
-        cid = str(qd.get("id") or "").strip()
-        if not cid:
-            return await call_next(req)
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+        p = _RE.sub(r"/+", "/", scope.get("path") or "").lower()
+        if not p.startswith("/rest/"):
+            return await self.app(scope, receive, send)
+        if any(x in p for x in ("/stream", "/download", "/getavatar", "/hls", "/ping", "/getlicense", "/getuser", "/scrobble")):
+            return await self.app(scope, receive, send)
 
-        kind = _k29_detect_source(cid)
-        try:
-            _sz_raw = int(str(qd.get("size") or "0").strip())
-        except Exception:
-            _sz_raw = 0
-        bucket = 256 if (0 < _sz_raw <= 280) else 500
-        ckey = f"{cid}|{kind or 'raw'}|{bucket}"
-        etag = '"' + _K29HL.md5(ckey.encode("utf-8", "ignore")).hexdigest()[:16] + '"'
+        method = (scope.get("method") or "GET").upper()
 
-        inm = (req.headers.get("if-none-match") or "").strip()
-        if inm and (inm == etag or etag in inm):
-            if ckey in _K29_FAST_RAM or _OS.path.isfile(_k29_disk_path(ckey)):
-                return _R(status_code=304, headers=_k29_art_headers(etag))
+        # 1. Tang toc anh bia (getCoverArt): L1 RAM -> L2 Disk -> Single-flight
+        if "/getcoverart" in p:
+            qi = list(_pq(scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+            qd = dict(qi)
+            if "_check_auth" in globals() and not _check_auth(qd):
+                return await self.app(scope, receive, send)
 
-        hit = _k29_ram_get(ckey)
-        if hit:
-            return _R(content=b"" if req.method == "HEAD" else hit, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
+            cid = str(qd.get("id") or "").strip()
+            if not cid:
+                return await self.app(scope, receive, send)
 
-        lp = _A.get_running_loop()
-        d_hit = await lp.run_in_executor(_K29_ART_POOL, _k29_disk_read, ckey)
-        if d_hit:
-            _k29_ram_put(ckey, d_hit)
-            return _R(content=b"" if req.method == "HEAD" else d_hit, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
+            kind = _k29_detect_source(cid)
+            try:
+                _sz_raw = int(str(qd.get("size") or "0").strip())
+            except Exception:
+                _sz_raw = 0
+            bucket = 256 if (0 < _sz_raw <= 280) else 500
+            ckey = f"{cid}|{kind or 'raw'}|{bucket}"
+            etag = '"' + _K29HL.md5(ckey.encode("utf-8", "ignore")).hexdigest()[:16] + '"'
 
-        if req.method == "HEAD":
-            return _R(content=b"", status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
+            req_hdrs = {k.decode("latin1").lower(): v.decode("latin1") for k, v in (scope.get("headers") or [])}
+            inm = (req_hdrs.get("if-none-match") or "").strip()
+            if inm and (inm == etag or etag in inm):
+                if ckey in _K29_FAST_RAM or _OS.path.isfile(_k29_disk_path(ckey)):
+                    return await _R(status_code=304, headers=_k29_art_headers(etag))(scope, receive, send)
 
-        lk = _k29_get_lock(ckey)
-        async with lk:
-            hit2 = _k29_ram_get(ckey)
-            if hit2:
-                return _R(content=hit2, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
+            hit = _k29_ram_get(ckey)
+            if hit:
+                return await _R(content=b"" if method == "HEAD" else hit, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))(scope, receive, send)
 
-            async with _k29_get_sem():
-                resp = await call_next(req)
-                if resp.status_code != 200:
-                    return resp
-                ct = (resp.headers.get("content-type") or "").lower()
-                if ct and "image" not in ct:
-                    return resp
-                body = getattr(resp, "body", None)
-                if body is None and hasattr(resp, "body_iterator"):
-                    chunks = []
-                    try:
-                        async for chunk in resp.body_iterator:
-                            chunks.append(chunk)
-                    except Exception:
-                        return _R(content=b"", status_code=499)
-                    body = b"".join(chunks)
+            lp = _A.get_running_loop()
+            d_hit = await lp.run_in_executor(_K29_ART_POOL, _k29_disk_read, ckey)
+            if d_hit:
+                _k29_ram_put(ckey, d_hit)
+                return await _R(content=b"" if method == "HEAD" else d_hit, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))(scope, receive, send)
 
-            if not body or len(body) < 100:
-                return _R(content=body or b"", status_code=200, media_type=ct or "image/jpeg", headers=_k29_art_headers())
+            if method == "HEAD":
+                return await _R(content=b"", status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))(scope, receive, send)
 
-            out_b = await lp.run_in_executor(_K29_ART_POOL, _k29_process_cover, body, kind, bucket)
-            if out_b and len(out_b) >= 100:
-                _k29_ram_put(ckey, out_b)
-                lp.run_in_executor(_K29_ART_POOL, _k29_disk_write, ckey, out_b)
-                return _R(content=out_b, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))
-            return _R(content=body, status_code=200, media_type=ct or "image/jpeg", headers=_k29_art_headers())
+            lk = _k29_get_lock(ckey)
+            async with lk:
+                hit2 = _k29_ram_get(ckey)
+                if hit2:
+                    return await _R(content=hit2, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))(scope, receive, send)
 
-    if req.method == "HEAD":
-        return await call_next(req)
+                start_info = [None]
+                chunks = []
+                passthrough = [False]
 
-    resp = await call_next(req)
-    if resp.status_code != 200:
-        return resp
+                async def _art_send(msg):
+                    mt = msg.get("type")
+                    if mt == "http.response.start":
+                        st = msg.get("status", 200)
+                        rh = {k.decode("latin1").lower(): v.decode("latin1") for k, v in (msg.get("headers") or [])}
+                        ct = rh.get("content-type", "").lower()
+                        if st != 200 or (ct and "image" not in ct):
+                            passthrough[0] = True
+                            await send(msg)
+                        else:
+                            start_info[0] = ct
+                    elif mt == "http.response.body":
+                        if passthrough[0]:
+                            await send(msg)
+                        else:
+                            b = msg.get("body") or b""
+                            if b:
+                                chunks.append(b)
+                    else:
+                        await send(msg)
 
-    ct = (resp.headers.get("content-type") or "").lower()
-    if ct and not any(t in ct for t in ("json", "xml", "javascript", "text")):
-        return resp
+                async with _k29_get_sem():
+                    await self.app(scope, receive, _art_send)
 
-    consumed = False
-    body = getattr(resp, "body", None)
-    if body is None and hasattr(resp, "body_iterator"):
+                if passthrough[0] or start_info[0] is None:
+                    return
+
+                body = b"".join(chunks)
+                ct = start_info[0] or "image/jpeg"
+                if not body or len(body) < 100:
+                    return await _R(content=body or b"", status_code=200, media_type=ct, headers=_k29_art_headers())(scope, receive, send)
+
+                out_b = await lp.run_in_executor(_K29_ART_POOL, _k29_process_cover, body, kind, bucket)
+                if out_b and len(out_b) >= 100:
+                    _k29_ram_put(ckey, out_b)
+                    lp.run_in_executor(_K29_ART_POOL, _k29_disk_write, ckey, out_b)
+                    return await _R(content=out_b, status_code=200, media_type="image/jpeg", headers=_k29_art_headers(etag))(scope, receive, send)
+                return await _R(content=body, status_code=200, media_type=ct, headers=_k29_art_headers())(scope, receive, send)
+
+        if method == "HEAD":
+            return await self.app(scope, receive, send)
+
+        # 2. Xu ly JSON/XML (xoa tien to, ghi nhan nguon logo, loc ngon ngu & khoa gu K30)
+        start_info = [None]
         chunks = []
-        try:
-            async for chunk in resp.body_iterator:
-                chunks.append(chunk)
-        except Exception:
-            return _R(content=b"", status_code=499)
+        passthrough = [False]
+
+        async def _api_send(msg):
+            mt = msg.get("type")
+            if mt == "http.response.start":
+                st = msg.get("status", 200)
+                rh = {k.decode("latin1").lower(): v.decode("latin1") for k, v in (msg.get("headers") or [])}
+                ct = rh.get("content-type", "").lower()
+                if st != 200 or (ct and not any(t in ct for t in ("json", "xml", "javascript", "text"))):
+                    passthrough[0] = True
+                    await send(msg)
+                else:
+                    start_info[0] = (st, msg.get("headers") or [], ct)
+            elif mt == "http.response.body":
+                if passthrough[0]:
+                    await send(msg)
+                else:
+                    b = msg.get("body") or b""
+                    if b:
+                        chunks.append(b)
+            else:
+                await send(msg)
+
+        await self.app(scope, receive, _api_send)
+        if passthrough[0] or start_info[0] is None:
+            return
+
+        st, raw_hdrs, ct = start_info[0]
         body = b"".join(chunks)
-        consumed = True
-
-    if not body:
-        if consumed:
-            hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type", "transfer-encoding", "content-encoding")}
-            return _R(content=b"", status_code=resp.status_code, media_type=resp.headers.get("content-type") or resp.media_type, headers=hdrs)
-        return resp
-
-    out_b = body
-    dirty_flag = [False]
-    try:
-        bs = body.lstrip()
-        if bs.startswith(b"{"):
-            data = _J.loads(body.decode("utf-8", "ignore"))
-            c1 = _k28_clean_json(data, dirty_flag)
-            c2 = await _k30_filter_json_tracks(data, p)
-            if c1 or c2:
-                out_b = _J.dumps(data, ensure_ascii=False).encode("utf-8")
-        elif bs.startswith(b"<"):
-            _k28_scan_xml_sources(body, dirty_flag)
-            tmp_xml = _K28_XML_STRIP_RE.sub(rb"\1", body)
-            out_b = _k30_filter_xml_tracks(tmp_xml, p)
-        else:
-            lb = body.lower()
-            if b"[ytm]" in lb or b"[hdd]" in lb or b"[yt]" in lb:
-                out_b = _K28_JSONP_STRIP_RE.sub(rb"\1", body)
-    except Exception:
         out_b = body
+        dirty_flag = [False]
+        if body:
+            try:
+                bs = body.lstrip()
+                if bs.startswith(b"{"):
+                    data = _J.loads(body.decode("utf-8", "ignore"))
+                    c1 = _k28_clean_json(data, dirty_flag)
+                    c2 = False
+                    if "_k30_filter_json_tracks" in globals():
+                        c2 = _k30_filter_json_tracks(data, p)
+                        if _K28INS.isawaitable(c2):
+                            c2 = await c2
+                    if c1 or c2:
+                        out_b = _J.dumps(data, ensure_ascii=False).encode("utf-8")
+                elif bs.startswith(b"<"):
+                    _k28_scan_xml_sources(body, dirty_flag)
+                    tmp_xml = _K28_XML_STRIP_RE.sub(rb"\1", body)
+                    out_b = _k30_filter_xml_tracks(tmp_xml, p) if "_k30_filter_xml_tracks" in globals() else tmp_xml
+                else:
+                    lb = body.lower()
+                    if b"[ytm]" in lb or b"[hdd]" in lb or b"[yt]" in lb:
+                        out_b = _K28_JSONP_STRIP_RE.sub(rb"\1", body)
+            except Exception:
+                out_b = body
 
-    if dirty_flag[0]:
-        try:
-            _A.get_running_loop().run_in_executor(_K29_ART_POOL, _k29_save_map)
-        except Exception:
-            pass
+        if dirty_flag[0]:
+            try:
+                _A.get_running_loop().run_in_executor(_K29_ART_POOL, _k29_save_map)
+            except Exception:
+                pass
 
-    if consumed or out_b != body:
-        hdrs = {k: v for k, v in resp.headers.items() if k.lower() not in ("content-length", "content-type", "transfer-encoding", "content-encoding")}
-        return _R(content=out_b, status_code=resp.status_code, media_type=resp.headers.get("content-type") or resp.media_type, headers=hdrs)
-    return resp
+        new_hdrs = [
+            (k, v) for k, v in raw_hdrs
+            if k.decode("latin1").lower() not in ("content-length", "transfer-encoding", "content-encoding")
+        ]
+        new_hdrs.append((b"content-length", str(len(out_b)).encode("latin1")))
+        await send({"type": "http.response.start", "status": st, "headers": new_hdrs})
+        await send({"type": "http.response.body", "body": out_b, "more_body": False})
 
+app.add_middleware(_K28ASGIMiddleware)
 _SCACHE.clear()
