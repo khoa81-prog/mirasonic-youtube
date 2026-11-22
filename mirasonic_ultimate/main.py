@@ -3467,7 +3467,7 @@ def _get_direct_yt_url(vid):
     try:
         # Uu tien so 1 luong Opus 160kbps (itag=251) co dai tan rong 20kHz!
         c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "-f", "141/774/251/140/bestaudio/best", "-g", f"https://www.youtube.com/watch?v={vid}"]
-        u = _SP.check_output(c, timeout=6).decode("utf-8", "ignore").strip().splitlines()[0]
+        u = _SP.check_output(c, timeout=15).decode("utf-8", "ignore").strip().splitlines()[0]
         if u.startswith("http"):
             _YT_DIRECT_URL[vid] = (u, now + 10800)
             return u
@@ -3691,7 +3691,7 @@ async def _k12_seek_mw(req, call_next):
                     except Exception: pass
                 if sent > 0:
                     break
-                for _cn in ("_DIRECT_URL_CACHE", "_YT_URL_CACHE", "_URL_CACHE", "_DIRECT_CACHE"):
+                for _cn in ("_YT_DIRECT_URL", "_DIRECT_URL_CACHE", "_YT_URL_CACHE", "_URL_CACHE", "_DIRECT_CACHE"):
                     _cd = globals().get(_cn)
                     if isinstance(_cd, dict):
                         _cd.pop(vid, None)
@@ -7498,7 +7498,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.35 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
+# --- K28: V1.8.36 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
@@ -7902,31 +7902,34 @@ def _k30_fetch_artist_songs(artist_name):
         return cached[1]
     res = []
     try:
-        ytm = _K30_YTM_CLIENT[0]
-        if ytm is None:
-            from ytmusicapi import YTMusic as _K30YTM
-            ytm = _K30YTM()
-            _K30_YTM_CLIENT[0] = ytm
-        raw = ytm.search(artist_name, filter="songs", limit=15) or []
+        cmd = [
+            "yt-dlp", "--flat-playlist", "--dump-single-json",
+            "--no-warnings", "--no-check-certificate",
+            f"ytsearch12:{artist_name} audio",
+        ]
+        raw_out = _SP.check_output(cmd, timeout=5).decode("utf-8", "ignore")
+        jdata = _J.loads(raw_out) if raw_out.strip().startswith("{") else {}
+        entries = jdata.get("entries") or []
         al = ck
-        for it in raw:
-            vid = str(it.get("videoId") or "").strip()
+        for it in entries:
+            if not isinstance(it, dict):
+                continue
+            vid = str(it.get("id") or "").strip()
             tit = str(it.get("title") or "").strip()
             if not vid or len(vid) != 11 or not tit:
                 continue
-            arts = [str(a.get("name") or "").strip() for a in (it.get("artists") or []) if isinstance(a, dict) and a.get("name")]
-            art_str = ", ".join(arts) or artist_name
-            if al not in art_str.lower() and not _k30_is_vn_text(art_str):
+            art_str = str(it.get("channel") or it.get("uploader") or artist_name).strip()
+            if al not in art_str.lower() and al not in tit.lower() and not _k30_is_vn_text(art_str):
                 continue
             if not _k30_is_allowed_track(tit, art_str):
                 continue
-            dur = _k30_parse_dur(it.get("duration_seconds") or it.get("duration"))
+            dur = _k30_parse_dur(it.get("duration"))
+            if dur > 600:
+                continue
             thumbs = it.get("thumbnails") or []
             turl = str(thumbs[-1].get("url") or "") if thumbs and isinstance(thumbs[-1], dict) else ""
-            alb_obj = it.get("album")
-            alb_name = str(alb_obj.get("name") or "").strip() if isinstance(alb_obj, dict) else ""
-            res.append({"vid": vid, "title": tit, "artist": art_str, "album": alb_name, "duration": dur, "thumb": turl})
-            if len(res) >= 10:
+            res.append({"vid": vid, "title": tit, "artist": artist_name, "album": "", "duration": dur, "thumb": turl})
+            if len(res) >= 8:
                 break
     except Exception:
         res = []
@@ -7934,6 +7937,7 @@ def _k30_fetch_artist_songs(artist_name):
         _K30_ARTIST_CACHE.clear()
     _K30_ARTIST_CACHE[ck] = (now, res)
     return res
+
 
 def _k30_extract_vid(s):
     m = _RE.search(r"([A-Za-z0-9_-]{11})$", str(s or "").strip())
@@ -7996,7 +8000,7 @@ async def _k30_filter_json_tracks(data, path_l):
                 if len(same_art) < 5:
                     try:
                         lp = _A.get_running_loop()
-                        extra = await _A.wait_for(lp.run_in_executor(_K29_ART_POOL, _k30_fetch_artist_songs, seed_art), timeout=2.5)
+                        extra = await _A.wait_for(lp.run_in_executor(_K29_ART_POOL, _k30_fetch_artist_songs, seed_art), timeout=5.5)
                     except Exception:
                         extra = []
                     id_pfx = _k30_id_prefix(seed_id)
