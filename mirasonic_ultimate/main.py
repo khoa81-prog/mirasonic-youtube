@@ -3466,7 +3466,7 @@ def _get_direct_yt_url(vid):
         return _YT_DIRECT_URL[vid][0]
     try:
         # Uu tien so 1 luong Opus 160kbps (itag=251) co dai tan rong 20kHz!
-        c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "-f", "141/774/251/140/bestaudio/best", "-g", f"https://www.youtube.com/watch?v={vid}"]
+        c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "--force-ipv4", "-f", "141/774/251/140/bestaudio/best", "-g", f"https://www.youtube.com/watch?v={vid}"]
         u = _SP.check_output(c, timeout=15).decode("utf-8", "ignore").strip().splitlines()[0]
         if u.startswith("http"):
             _YT_DIRECT_URL[vid] = (u, now + 10800)
@@ -3514,7 +3514,7 @@ def _ens_m4a_256(vid):
                     "-i", "pipe:0", "-vn", "-ac", "2", "-ar", "44100",
                     "-c:a", "aac", "-b:a", "256k",
                     "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-                    "-frag_duration", "1000000", "-f", "ipod", mp,
+                    "-frag_duration", "500000", "-f", "ipod", mp,
                 ]
                 p1 = None
                 p2 = None
@@ -3667,14 +3667,14 @@ async def _k12_seek_mw(req, call_next):
     f_fmt = "mp3" if is_cast else "ipod"
     f_codec = "libmp3lame" if is_cast else "aac"
 
-    for _ in range(55):
-        if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 65536) or j["d"]:
+    for _ in range(180):
+        if (_OS.path.exists(j["p"]) and _OS.path.getsize(j["p"]) >= 16384) or j["d"]:
             break
         await _A.sleep(0.07)
 
     cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
     if st_b > 0 and not j["d"] and cur_sz < st_b + 65536:
-        for _ in range(15):
+        for _ in range(45):
             cur_sz = _OS.path.getsize(j["p"]) if _OS.path.exists(j["p"]) else 0
             if cur_sz >= st_b + 65536 or j["d"]:
                 break
@@ -7545,7 +7545,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.39 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
+# --- K28: V1.8.40 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
