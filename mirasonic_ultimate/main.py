@@ -3460,19 +3460,28 @@ def _fmt(rt, js, cb=None):
                 a["path"] = _RE.sub(r"\.(aac|mp3|m4a)$", ".m4a", str(a["path"]))
     return _orig_fmt_k11(rt, js, cb)
 
-def _get_direct_yt_url(vid):
+def _get_direct_yt_url(vid, uname=""):
+    su = _k32_norm_u(uname)
+    ck_key = f"{su or '_anon'}|{vid}"
     now = _TM.time()
-    if vid in _YT_DIRECT_URL and _YT_DIRECT_URL[vid][1] > now:
-        return _YT_DIRECT_URL[vid][0]
-    try:
-        # Uu tien so 1 luong Opus 160kbps (itag=251) co dai tan rong 20kHz!
-        c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "--force-ipv4", "-f", "141/774/251/140/bestaudio/best", "-g", f"https://www.youtube.com/watch?v={vid}"]
-        u = _SP.check_output(c, timeout=15).decode("utf-8", "ignore").strip().splitlines()[0]
-        if u.startswith("http"):
-            _YT_DIRECT_URL[vid] = (u, now + 10800)
-            return u
-    except Exception:
-        pass
+    if ck_key in _YT_DIRECT_URL and _YT_DIRECT_URL[ck_key][1] > now:
+        return _YT_DIRECT_URL[ck_key][0]
+    use_ck = _k32_should_use_ck(su)
+    ck_p = _k32_ck_path(su) if use_ck else ""
+    attempts = [ck_p, ""] if ck_p else [""]
+    for cp in attempts:
+        try:
+            c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "--force-ipv4"]
+            if cp:
+                c.extend(["--cookies", cp])
+            c.extend(["-f", "141/774/251/140/bestaudio/best", "-g", f"https://www.youtube.com/watch?v={vid}"])
+            u = _SP.check_output(c, timeout=15).decode("utf-8", "ignore").strip().splitlines()[0]
+            if u.startswith("http"):
+                _YT_DIRECT_URL[ck_key] = (u, now + 10800)
+                return u
+        except Exception:
+            if cp:
+                _k32_set_st(su, "expired", "Loi lay link tua - da tu lui ve Anonymous")
     return ""
 
 # --- ENGINE 1: TRUE 256KBPS FRAGMENTED M4A (OPUS 251 -> 256K AAC + SIDX SEEK BAR) ---
@@ -3494,18 +3503,23 @@ def _ens_m4a_256(vid):
     j = {"p": mp, "d": False, "total_sz": est_sz}
     _M4A_256_JOBS[vid] = j
 
+    _req_u = _k32_cur_user()
     def _run():
         try:
             for _att in range(2):
+                if _ck_p:
+                    _k32_set_st(_req_u, "expired", "Cookie loi khi tai nhac - da tu lui ve Anonymous")
                 try:
                     if _OS.path.exists(mp):
                         _OS.remove(mp)
                 except Exception:
                     pass
+                _ck_p = _k32_ck_path(_req_u) if (_att == 0 and _k32_should_use_ck(_req_u)) else ""
                 c1 = [
                     "yt-dlp", "--no-playlist", "--no-warnings", "-q",
                     "--no-check-certificate", "--force-ipv4",
                     "--socket-timeout", "15", "--retries", "3", "--fragment-retries", "3",
+                    *(["--cookies", _ck_p] if _ck_p else []),
                     "-f", "141/774/251/140/bestaudio/best",
                     "-o", "-", f"https://www.youtube.com/watch?v={vid}",
                 ]
@@ -3549,6 +3563,8 @@ def _ens_m4a_256(vid):
 
                 ok_rc = (not stalled) and (p2 is not None and p2.returncode == 0)
                 if ok_rc and _OS.path.exists(mp) and _OS.path.getsize(mp) > 65536:
+                    if _ck_p and (_K32_STATE.get(_req_u) or {}).get("st") not in ("premium", "ok"):
+                        _k32_set_st(_req_u, "ok", "Dang hoat dong qua cookie Google")
                     j["total_sz"] = _OS.path.getsize(mp)
                     if vid in _YL:
                         _YL[vid]["size"] = str(j["total_sz"])
@@ -3708,7 +3724,7 @@ async def _k12_seek_mw(req, call_next):
         async def _ffmpeg_seek_stream(sec, max_bytes):
             sent = 0
             for _att in range(2):
-                u_out = await lp.run_in_executor(_DL_POOL, _get_direct_yt_url, vid)
+                u_out = await lp.run_in_executor(_DL_POOL, _get_direct_yt_url, vid, _k32_cur_user())
                 if not u_out:
                     continue
                 c2 = ["ffmpeg", "-loglevel", "error"]
@@ -7545,7 +7561,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.40 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
+# --- K28: V1.8.41 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
@@ -8256,6 +8272,117 @@ def _k31_gc_loop():
         except Exception: pass
         _K30T.sleep(21600)
 
+# --- K32: V1.8.41 MULTI-USER GOOGLE COOKIES + SMART FALLBACK + HEALTH CHECK ---
+import contextvars as _K32CV
+from fastapi import Request as _K32RQ
+
+_K32_CUR_USER = _K32CV.ContextVar("k32_u", default="")
+_K32_CK_DIR = "/data/cookies"
+_K32_ST_FILE = "/data/cookies/_status.json"
+_K32_STATE = {}
+
+try:
+    _OS.makedirs(_K32_CK_DIR, exist_ok=True)
+    if _OS.path.isfile(_K32_ST_FILE):
+        _K32_STATE.update(_J.loads(open(_K32_ST_FILE).read()))
+except Exception:
+    pass
+
+def _k32_norm_u(u):
+    return _RE.sub(r"[^a-zA-Z0-9._-]", "", str(u or "").strip().lower())
+
+def _k32_cur_user():
+    return _k32_norm_u(_K32_CUR_USER.get())
+
+def _k32_ck_path(u):
+    su = _k32_norm_u(u)
+    if not su:
+        return ""
+    p = _OS.path.join(_K32_CK_DIR, f"{su}.txt")
+    return p if (_OS.path.isfile(p) and _OS.path.getsize(p) > 30) else ""
+
+def _k32_save_state():
+    try:
+        _OS.makedirs(_K32_CK_DIR, exist_ok=True)
+        open(_K32_ST_FILE, "w").write(_J.dumps(_K32_STATE, ensure_ascii=False))
+    except Exception:
+        pass
+
+def _k32_parse_exp_days(path):
+    try:
+        now = int(_K30T.time())
+        exps = []
+        keys = {"SAPISID", "__Secure-3PAPISID", "SID", "__Secure-3PSID", "LOGIN_INFO"}
+        for ln in open(path, "r", errors="ignore"):
+            if not ln.strip() or ln.startswith("#"):
+                continue
+            pts = ln.rstrip("\r\n").split("\t")
+            if len(pts) >= 7 and pts[5] in keys and pts[4].isdigit():
+                v = int(pts[4])
+                if v > 0:
+                    exps.append(v)
+        if not exps:
+            return None
+        return int((min(exps) - now) / 86400)
+    except Exception:
+        return None
+
+def _k32_set_st(u, st, msg):
+    su = _k32_norm_u(u)
+    if not su:
+        return
+    p = _k32_ck_path(su)
+    _K32_STATE[su] = {
+        "st": st, "msg": msg, "ts": int(_K30T.time()),
+        "days": _k32_parse_exp_days(p) if p else None,
+    }
+    _k32_save_state()
+
+def _k32_should_use_ck(u):
+    su = _k32_norm_u(u)
+    if not _k32_ck_path(su):
+        return False
+    info = _K32_STATE.get(su) or {}
+    if info.get("st") == "expired" and (_K30T.time() - info.get("ts", 0)) < 1800:
+        return False
+    return True
+
+def _k32_test_cookie(u):
+    su = _k32_norm_u(u)
+    p = _k32_ck_path(su)
+    if not p:
+        _K32_STATE.pop(su, None)
+        _k32_save_state()
+        return ("none", "Chua nap cookie (dang chay Anonymous)")
+    try:
+        cmd = [
+            "yt-dlp", "--cookies", p, "--no-playlist", "--no-warnings",
+            "--no-check-certificate", "--force-ipv4", "-F",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        ]
+        pr = _SP.run(cmd, capture_output=True, text=True, timeout=18)
+        out, err = pr.stdout or "", (pr.stderr or "").lower()
+        if pr.returncode != 0 or "sign in to confirm" in err or "no longer valid" in err:
+            _k32_set_st(su, "expired", "Cookie het han hoac bi tu choi (tu lui Anonymous)")
+            return ("expired", "Cookie het han hoac bi tu choi")
+        if _RE.search(r"(?m)^\s*(?:141|774)\b", out):
+            _k32_set_st(su, "premium", "Hoat dong tot (Mo khoa Premium 256kbps)")
+            return ("premium", "Hoat dong tot (Premium 256kbps)")
+        _k32_set_st(su, "ok", "Hoat dong tot (Tai khoan thuong 160kbps)")
+        return ("ok", "Hoat dong tot (Tai khoan thuong 160kbps)")
+    except Exception:
+        return ("warn", "Loi mang khi kiem tra, thu lai sau")
+
+def _k32_list_users():
+    out = []
+    if _OS.path.isdir(_K32_CK_DIR):
+        for fn in sorted(_OS.listdir(_K32_CK_DIR)):
+            if fn.endswith(".txt"):
+                su = fn[:-4]
+                info = _K32_STATE.get(su) or {"st": "unknown", "msg": "Chua kiem tra", "ts": 0, "days": _k32_parse_exp_days(_OS.path.join(_K32_CK_DIR, fn))}
+                out.append((su, info))
+    return out
+
 import inspect as _K28INS
 
 class _K28ASGIMiddleware:
@@ -8265,6 +8392,14 @@ class _K28ASGIMiddleware:
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
             return await self.app(scope, receive, send)
+        _u_cur = dict(_pq(scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True)).get("u") or ""
+        _tok = _K32_CUR_USER.set(_k32_norm_u(_u_cur))
+        try:
+            return await self._handle_http(scope, receive, send)
+        finally:
+            _K32_CUR_USER.reset(_tok)
+
+    async def _handle_http(self, scope, receive, send):
         p = _RE.sub(r"/+", "/", scope.get("path") or "").lower()
         if not p.startswith("/rest/"):
             return await self.app(scope, receive, send)
@@ -8444,7 +8579,7 @@ class _K28ASGIMiddleware:
 app.add_middleware(_K28ASGIMiddleware)
 
 @app.get("/status")
-async def _k31_status_page(cleaned: str = ""):
+async def _k31_status_page(cleaned: str = "", msg: str = "", err: str = ""):
     ram_mb = _k31_ram_mb()
     aud_cnt, aud_b = _k31_dir_stats(globals().get("_AUD_DIR"))
     art_cnt, art_b = _k31_dir_stats(globals().get("_K29_ART_DIR") or "/data/k29_art_v31")
@@ -8452,16 +8587,47 @@ async def _k31_status_page(cleaned: str = ""):
     up_str = f"{up_s // 86400}d {(up_s % 86400) // 3600}h {(up_s % 3600) // 60}m"
     act_jobs = sum(1 for jn in ("_M4A_256_JOBS", "_MP3_JOBS") for v in (globals().get(jn) or {}).values() if isinstance(v, dict) and not v.get("d"))
     last_gc = "Chua chay" if not _K31_GC_STATS["last_ts"] else f"{int((_K30T.time() - _K31_GC_STATS['last_ts']) // 60)} phut truoc (don {_K31_GC_STATS['deleted_files']} file, {_K31_GC_STATS['freed_mb']} MB)"
-    banner = '<div class="ok">Da don sach nhac tam & giai phong RAM!</div>' if cleaned else ""
-    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mirasonic v1.8.39</title>
-<style>body{{background:#121216;color:#f1f1f4;font-family:system-ui,sans-serif;margin:0;padding:18px}}.wrap{{max-width:520px;margin:0 auto}}h1{{font-size:20px;margin:0 0 4px;color:#ff4d6d}}.sub{{font-size:13px;color:#9a9aa6;margin-bottom:14px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}}.card{{background:#1c1c22;border:1px solid #2c2c35;border-radius:12px;padding:12px}}.lbl{{font-size:12px;color:#9a9aa6}}.val{{font-size:20px;font-weight:700;margin-top:4px}}.sm{{font-size:12px;color:#b8b8c4;margin-top:2px}}.ok{{background:#163826;border:1px solid #28a745;color:#9ef0b8;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.btn{{width:100%;padding:13px;border:none;border-radius:12px;background:#ff4d6d;color:#fff;font-size:15px;font-weight:600;cursor:pointer}}</style></head>
-<body><div class="wrap"><h1>Mirasonic Ultimate</h1><div class="sub">v1.8.39 | Uptime: {up_str}</div>{banner}
+    banner = ""
+    if cleaned:
+        banner = '<div class="ok">Da don sach nhac tam & giai phong RAM!</div>'
+    elif msg:
+        cls = "err" if err else "ok"
+        banner = f'<div class="{cls}">{_K31H.escape(msg)}</div>'
+
+    rows = []
+    for su, info in _k32_list_users():
+        st = info.get("st", "unknown")
+        bcls = "bg-g" if st == "premium" else ("bg-b" if st == "ok" else ("bg-r" if st == "expired" else "bg-y"))
+        blbl = "Premium 256k" if st == "premium" else ("Thuong 160k" if st == "ok" else ("Het han (Anon)" if st == "expired" else "Chua test"))
+        dval = info.get("days")
+        dtxt = "" if dval is None else (f" | Han: {'Da qua han' if dval < 0 else f'~{dval} ngay'}")
+        rows.append(
+            f'<div class="urow"><div><b>{_K31H.escape(su)}</b> <span class="bdg {bcls}">{blbl}</span>'
+            f'<div class="sm">{_K31H.escape(info.get("msg",""))} {dtxt}</div></div>'
+            f'<form method="post" action="/status/cookie/test" style="margin:0"><input type="hidden" name="u" value="{_K31H.escape(su,quote=True)}">'
+            f'<button class="sbtn" type="submit">Kiem tra</button></form></div>'
+        )
+    u_html = "".join(rows) if rows else '<div class="sm">Chua co user nao nap cookie (tat ca dang chay Anonymous).</div>'
+
+    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mirasonic v1.8.41</title>
+<style>body{{background:#121216;color:#f1f1f4;font-family:system-ui,sans-serif;margin:0;padding:16px}}.wrap{{max-width:540px;margin:0 auto}}h1{{font-size:20px;margin:0 0 4px;color:#ff4d6d}}h2{{font-size:15px;margin:0 0 8px;color:#fff}}.sub{{font-size:13px;color:#9a9aa6;margin-bottom:14px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}}.card{{background:#1c1c22;border:1px solid #2c2c35;border-radius:12px;padding:12px;margin-bottom:12px}}.lbl{{font-size:12px;color:#9a9aa6}}.val{{font-size:19px;font-weight:700;margin-top:4px}}.sm{{font-size:12px;color:#b8b8c4;margin-top:2px}}.ok{{background:#163826;border:1px solid #28a745;color:#9ef0b8;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.err{{background:#3b181e;border:1px solid #dc3545;color:#ffadb5;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.btn{{width:100%;padding:12px;border:none;border-radius:10px;background:#ff4d6d;color:#fff;font-size:14px;font-weight:600;cursor:pointer}}.btn2{{background:#32323d;margin-top:8px}}.sbtn{{padding:6px 10px;border:none;border-radius:8px;background:#2f2f3b;color:#fff;font-size:12px;cursor:pointer}}.urow{{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #2a2a33}}.bdg{{font-size:11px;padding:2px 6px;border-radius:6px;margin-left:4px}}.bg-g{{background:#194d33;color:#8ef5be}}.bg-b{{background:#183a5c;color:#93c5fd}}.bg-r{{background:#5c1922;color:#fca5a5}}.bg-y{{background:#4a3c12;color:#fde68a}}input,textarea{{width:100%;box-sizing:border-box;background:#121216;color:#fff;border:1px solid #353542;border-radius:8px;padding:9px;margin-bottom:8px;font-size:13px}}</style></head>
+<body><div class="wrap"><h1>Mirasonic Ultimate</h1><div class="sub">v1.8.41 | Uptime: {up_str}</div>{banner}
 <div class="grid">
-<div class="card"><div class="lbl">RAM dang dung</div><div class="val">{ram_mb} MB</div><div class="sm">Dem anh RAM: {len(_K29_FAST_RAM)}</div></div>
-<div class="card"><div class="lbl">Nhac tam (HDD)</div><div class="val">{aud_b/1048576:.1f} MB</div><div class="sm">{aud_cnt} file (tran 2GB)</div></div>
-<div class="card"><div class="lbl">Dem anh bia</div><div class="val">{art_b/1048576:.1f} MB</div><div class="sm">{art_cnt} file (tran 2500)</div></div>
-<div class="card"><div class="lbl">Lyrics & Luong</div><div class="val">{len(_K31_LYRICS_CACHE)} LRC</div><div class="sm">Transcode: {act_jobs} | Meta: {len(_K31_META_MAP)}</div></div>
-</div><div class="card" style="margin-bottom:12px"><div class="lbl">Auto-GC (moi 6 tieng)</div><div class="sm" style="margin-top:4px;color:#e5e5ee">Lan gan nhat: {last_gc}</div></div>
+<div class="card" style="margin:0"><div class="lbl">RAM dang dung</div><div class="val">{ram_mb} MB</div><div class="sm">Dem anh RAM: {len(_K29_FAST_RAM)}</div></div>
+<div class="card" style="margin:0"><div class="lbl">Nhac tam (HDD)</div><div class="val">{aud_b/1048576:.1f} MB</div><div class="sm">{aud_cnt} file (tran 2GB)</div></div>
+<div class="card" style="margin:0"><div class="lbl">Dem anh bia</div><div class="val">{art_b/1048576:.1f} MB</div><div class="sm">{art_cnt} file (tran 2500)</div></div>
+<div class="card" style="margin:0"><div class="lbl">Lyrics & Luong</div><div class="val">{len(_K31_LYRICS_CACHE)} LRC</div><div class="sm">Transcode: {act_jobs} | Meta: {len(_K31_META_MAP)}</div></div>
+</div>
+<div class="card"><h2>Tai khoan Google (YouTube Music)</h2>{u_html}
+<form method="post" action="/status/cookie" style="margin-top:12px">
+<input name="u" placeholder="Ten dang nhap Mirasonic (vd: khoa)" required>
+<input name="p" type="password" placeholder="Mat khau Mirasonic" required>
+<input type="file" accept=".txt" onchange="var f=this.files[0];if(f){{var r=new FileReader();r.onload=function(){{document.getElementById('ck_box').value=r.result;}};r.readAsText(f);}}">
+<textarea id="ck_box" name="cookies" rows="3" placeholder="Chon file cookies.txt o tren hoac dan noi dung vao day (de trong neu muon Dang xuat)"></textarea>
+<button class="btn" type="submit" name="act" value="save">Luu & Kiem tra Cookie Google</button>
+<button class="btn btn2" type="submit" name="act" value="del">Dang xuat Google (Ve Anonymous)</button>
+</form></div>
+<div class="card"><div class="lbl">Auto-GC (moi 6 tieng)</div><div class="sm" style="margin-top:4px;color:#e5e5ee">Lan gan nhat: {last_gc}</div></div>
 <form method="post" action="/status/clean"><button class="btn" type="submit">Don rac ngay (Nhac tam + RAM)</button></form></div></body></html>"""
     return _R(content=page.encode("utf-8"), status_code=200, media_type="text/html; charset=utf-8")
 
@@ -8470,6 +8636,36 @@ async def _k31_status_clean():
     await _A.get_running_loop().run_in_executor(_K29_ART_POOL, _k31_run_gc, True, 2048)
     return _R(status_code=303, headers={"Location": "/status?cleaned=1"})
 
-_TH.Thread(target=_k31_gc_loop, daemon=True).start()
+@app.post("/status/cookie")
+async def _k32_cookie_action(req: _K32RQ):
+    raw = (await req.body()).decode("utf-8", "ignore")
+    fm = {k: v[0] for k, v in _K31UP.parse_qs(raw, keep_blank_values=True).items()}
+    u_raw, p_raw, act = (fm.get("u") or "").strip(), (fm.get("p") or "").strip(), (fm.get("act") or "save").strip()
+    su = _k32_norm_u(u_raw)
+    if not su or ("_check_auth" in globals() and not _check_auth({"u": u_raw, "p": p_raw})):
+        return _R(status_code=303, headers={"Location": "/status?err=1&msg=" + _K31UP.quote("Sai ten dang nhap hoac mat khau Mirasonic!")})
+    ck_f = _OS.path.join(_K32_CK_DIR, f"{su}.txt")
+    if act == "del":
+        try:
+            if _OS.path.isfile(ck_f): _OS.remove(ck_f)
+        except Exception: pass
+        _K32_STATE.pop(su, None); _k32_save_state()
+        return _R(status_code=303, headers={"Location": "/status?msg=" + _K31UP.quote(f"Da dang xuat Google cho {su} (quay ve Anonymous)!")})
+    ck_txt = (fm.get("cookies") or "").strip()
+    if len(ck_txt) < 40 or ("youtube.com" not in ck_txt and "google.com" not in ck_txt):
+        return _R(status_code=303, headers={"Location": "/status?err=1&msg=" + _K31UP.quote("Noi dung cookies.txt khong hop le (thieu du lieu YouTube/Google)!")})
+    _OS.makedirs(_K32_CK_DIR, exist_ok=True)
+    open(ck_f, "w", encoding="utf-8").write(ck_txt + "\n")
+    st, smsg = await _A.get_running_loop().run_in_executor(_K29_ART_POOL, _k32_test_cookie, su)
+    ef = "&err=1" if st == "expired" else ""
+    return _R(status_code=303, headers={"Location": f"/status?msg={_K31UP.quote(f'[{su}] {smsg}')}{ef}"})
 
-_SCACHE.clear()
+@app.post("/status/cookie/test")
+async def _k32_cookie_test_ep(req: _K32RQ):
+    raw = (await req.body()).decode("utf-8", "ignore")
+    su = _k32_norm_u((_K31UP.parse_qs(raw).get("u") or [""])[0])
+    st, smsg = await _A.get_running_loop().run_in_executor(_K29_ART_POOL, _k32_test_cookie, su)
+    ef = "&err=1" if st == "expired" else ""
+    return _R(status_code=303, headers={"Location": f"/status?msg={_K31UP.quote(f'[{su}] {smsg}')}{ef}"})
+
+_TH.Thread(target=_k31_gc_loop, daemon=True).start()
