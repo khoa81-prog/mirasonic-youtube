@@ -4798,7 +4798,7 @@ def _fetch_yt_500_vid(vid):
             if jpg:
                 return jpg
 
-    d_hq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 400, 0.9)
+    d_hq = _dl_fast(f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg", 6000, 2.2) or _dl_fast(f"https://i.ytimg.com/vi/{vid}/sddefault.jpg", 4000, 1.8) or _dl_fast(f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", 400, 0.9)
     if d_hq:
         jpg = _crop_500_square(d_hq, "hq43")
         if jpg:
@@ -7561,7 +7561,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.44 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
+# --- K28: V1.8.45 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
@@ -8409,18 +8409,28 @@ def _k32_norm_entries(entries, su, pl_name):
         tit = str(it.get("title") or "").strip()
         if len(vid) != 11 or not tit or tit in ("[Private video]", "[Deleted video]"):
             continue
-        art = str(it.get("channel") or it.get("uploader") or it.get("artist") or "YouTube Music").strip()
-        art = _RE.sub(r"\s*-\s*Topic$", "", art)
+        raw_ch = str(it.get("channel") or it.get("uploader") or it.get("artist") or "YouTube Music").strip()
+        is_topic = bool(_RE.search(r"\s*-\s*Topic$", raw_ch))
+        art = _RE.sub(r"\s*-\s*Topic$", "", raw_ch)
         dur = _k30_parse_dur(it.get("duration"))
         thumbs = it.get("thumbnails") or []
-        turl = str(thumbs[-1].get("url") or "") if thumbs and isinstance(thumbs[-1], dict) else f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+        turl = str(thumbs[-1].get("url") or "") if thumbs and isinstance(thumbs[-1], dict) else ""
+        tl = turl.lower()
+        is_gg = ("googleusercontent.com" in tl or "ggpht.com" in tl)
+        is_ytm = is_gg or is_topic
+        if is_gg:
+            turl = _RE.sub(r"=w\d+-h\d+[^&\s]*|=s\d+[^&\s]*", "=w600-h600-l90-rj", turl)
         sid = _K32_YT_PFX + vid
         if isinstance(yl_dict, dict):
             yl_dict[vid] = {"title": tit, "artist": art, "album": pl_name, "duration": dur}
-        if isinstance(ytm_th, dict) and turl:
-            ytm_th[vid] = turl
-        _K29_SRC_MAP[sid] = "ytm"
-        _K29_SRC_MAP[vid] = "ytm"
+        if isinstance(ytm_th, dict):
+            if is_gg and turl:
+                ytm_th[vid] = turl
+            elif "ytimg.com" in str(ytm_th.get(vid) or "").lower():
+                ytm_th.pop(vid, None)
+        _src_k = "ytm" if is_ytm else "yt"
+        _K29_SRC_MAP[sid] = _src_k
+        _K29_SRC_MAP[vid] = _src_k
         _K31_META_MAP[sid] = (tit, art, dur)
         out.append({
             "id": sid, "parent": "ytpl_root", "isDir": False, "title": tit,
@@ -8798,9 +8808,9 @@ async def _k31_status_page(cleaned: str = "", msg: str = "", err: str = ""):
         )
     u_html = "".join(rows) if rows else '<div class="sm">Chua co user nao nap cookie (tat ca dang chay Anonymous).</div>'
 
-    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mirasonic v1.8.44</title>
+    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mirasonic v1.8.45</title>
 <style>body{{background:#121216;color:#f1f1f4;font-family:system-ui,sans-serif;margin:0;padding:16px}}.wrap{{max-width:540px;margin:0 auto}}h1{{font-size:20px;margin:0 0 4px;color:#ff4d6d}}h2{{font-size:15px;margin:0 0 8px;color:#fff}}.sub{{font-size:13px;color:#9a9aa6;margin-bottom:14px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}}.card{{background:#1c1c22;border:1px solid #2c2c35;border-radius:12px;padding:12px;margin-bottom:12px}}.lbl{{font-size:12px;color:#9a9aa6}}.val{{font-size:19px;font-weight:700;margin-top:4px}}.sm{{font-size:12px;color:#b8b8c4;margin-top:2px}}.ok{{background:#163826;border:1px solid #28a745;color:#9ef0b8;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.err{{background:#3b181e;border:1px solid #dc3545;color:#ffadb5;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.btn{{width:100%;padding:12px;border:none;border-radius:10px;background:#ff4d6d;color:#fff;font-size:14px;font-weight:600;cursor:pointer}}.btn2{{background:#32323d;margin-top:8px}}.sbtn{{padding:6px 10px;border:none;border-radius:8px;background:#2f2f3b;color:#fff;font-size:12px;cursor:pointer}}.urow{{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #2a2a33}}.bdg{{font-size:11px;padding:2px 6px;border-radius:6px;margin-left:4px}}.bg-g{{background:#194d33;color:#8ef5be}}.bg-b{{background:#183a5c;color:#93c5fd}}.bg-r{{background:#5c1922;color:#fca5a5}}.bg-y{{background:#4a3c12;color:#fde68a}}input,textarea{{width:100%;box-sizing:border-box;background:#121216;color:#fff;border:1px solid #353542;border-radius:8px;padding:9px;margin-bottom:8px;font-size:13px}}</style></head>
-<body><div class="wrap"><h1>Mirasonic Ultimate</h1><div class="sub">v1.8.44 | Uptime: {up_str}</div>{banner}
+<body><div class="wrap"><h1>Mirasonic Ultimate</h1><div class="sub">v1.8.45 | Uptime: {up_str}</div>{banner}
 <div class="grid">
 <div class="card" style="margin:0"><div class="lbl">RAM dang dung</div><div class="val">{ram_mb} MB</div><div class="sm">Dem anh RAM: {len(_K29_FAST_RAM)}</div></div>
 <div class="card" style="margin:0"><div class="lbl">Nhac tam (HDD)</div><div class="val">{aud_b/1048576:.1f} MB</div><div class="sm">{aud_cnt} file (tran 2GB)</div></div>
@@ -8866,5 +8876,17 @@ async def _k32_cookie_sync_ep(req: _K32RQ):
     lm = await lp.run_in_executor(_K29_ART_POOL, _k32_fetch_ytm_tracks, su, "LM", True)
     lcnt = len(lm["tracks"]) if lm else 0
     return _R(status_code=303, headers={"Location": f"/status?msg={_K31UP.quote(f'[{su}] Da dong bo {len(pls)} playlist YTM & {lcnt} bai Liked Music!')}"})
+
+try:
+    _k32_rst = "/data/.k32_art_reset_1845"
+    if not _OS.path.exists(_k32_rst):
+        _k32_ad = globals().get("_K29_ART_DIR") or "/data/k29_art_v31"
+        if _OS.path.isdir(_k32_ad):
+            for _fn in _OS.listdir(_k32_ad):
+                try: _OS.remove(_OS.path.join(_k32_ad, _fn))
+                except Exception: pass
+        open(_k32_rst, "w").write("1")
+except Exception:
+    pass
 
 _TH.Thread(target=_k31_gc_loop, daemon=True).start()
