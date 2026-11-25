@@ -3471,10 +3471,10 @@ def _get_direct_yt_url(vid, uname=""):
     attempts = [ck_p, ""] if ck_p else [""]
     for cp in attempts:
         try:
-            c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "--force-ipv4"]
+            c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "--force-ipv4", "--js-runtimes", "node"]
             if cp:
                 c.extend(["--cookies", cp])
-            c.extend(["-f", "141/774/251/140/bestaudio/best", "-g", f"https://www.youtube.com/watch?v={vid}"])
+            c.extend(["-f", "141/774/251/140/bestaudio/best", "-g", f"https://{'music' if cp else 'www'}.youtube.com/watch?v={vid}"])
             u = _SP.check_output(c, timeout=15).decode("utf-8", "ignore").strip().splitlines()[0]
             if u.startswith("http"):
                 _YT_DIRECT_URL[ck_key] = (u, now + 10800)
@@ -3519,9 +3519,9 @@ def _ens_m4a_256(vid):
                     "yt-dlp", "--no-playlist", "--no-warnings", "-q",
                     "--no-check-certificate", "--force-ipv4",
                     "--socket-timeout", "15", "--retries", "3", "--fragment-retries", "3",
-                    *(["--cookies", _ck_p] if _ck_p else []),
+                    "--js-runtimes", "node", *(["--cookies", _ck_p] if _ck_p else []),
                     "-f", "141/774/251/140/bestaudio/best",
-                    "-o", "-", f"https://www.youtube.com/watch?v={vid}",
+                    "-o", "-", f"https://{'music' if _ck_p else 'www'}.youtube.com/watch?v={vid}",
                 ]
                 c2 = [
                     "ffmpeg", "-y", "-loglevel", "error",
@@ -7561,7 +7561,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.41 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
+# --- K28: V1.8.42 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
@@ -8354,11 +8354,15 @@ def _k32_test_cookie(u):
         _K32_STATE.pop(su, None)
         _k32_save_state()
         return ("none", "Chua nap cookie (dang chay Anonymous)")
+    raw_ck = open(p, "r", errors="ignore").read()
+    if not any(k in raw_ck for k in ("SAPISID", "__Secure-3PAPISID", "LOGIN_INFO")):
+        _k32_set_st(su, "expired", "File cookies.txt thieu khoa dang nhap Google (SAPISID/LOGIN_INFO)")
+        return ("expired", "File thieu khoa dang nhap Google")
     try:
         cmd = [
             "yt-dlp", "--cookies", p, "--no-playlist", "--no-warnings",
-            "--no-check-certificate", "--force-ipv4", "-F",
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "--no-check-certificate", "--force-ipv4", "--js-runtimes", "node", "-F",
+            "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
         ]
         pr = _SP.run(cmd, capture_output=True, text=True, timeout=18)
         out, err = pr.stdout or "", (pr.stderr or "").lower()
@@ -8382,6 +8386,185 @@ def _k32_list_users():
                 info = _K32_STATE.get(su) or {"st": "unknown", "msg": "Chua kiem tra", "ts": 0, "days": _k32_parse_exp_days(_OS.path.join(_K32_CK_DIR, fn))}
                 out.append((su, info))
     return out
+
+
+_K32_YT_PFX = 'yt:'
+_K32_PL_CACHE = {}
+_K32_TR_CACHE = {}
+
+def _k32_ytdlp_base(cp=""):
+    cmd = ["yt-dlp", "--no-warnings", "--no-check-certificate", "--force-ipv4", "--js-runtimes", "node"]
+    if cp:
+        cmd.extend(["--cookies", cp])
+    return cmd
+
+def _k32_norm_entries(entries, su, pl_name):
+    out = []
+    yl_dict = globals().get("_YL")
+    ytm_th = globals().get("_YTM_THUMB")
+    for it in (entries or []):
+        if not isinstance(it, dict):
+            continue
+        vid = str(it.get("id") or "").strip()
+        tit = str(it.get("title") or "").strip()
+        if len(vid) != 11 or not tit or tit in ("[Private video]", "[Deleted video]"):
+            continue
+        art = str(it.get("channel") or it.get("uploader") or it.get("artist") or "YouTube Music").strip()
+        art = _RE.sub(r"\s*-\s*Topic$", "", art)
+        dur = _k30_parse_dur(it.get("duration"))
+        thumbs = it.get("thumbnails") or []
+        turl = str(thumbs[-1].get("url") or "") if thumbs and isinstance(thumbs[-1], dict) else f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+        sid = _K32_YT_PFX + vid
+        if isinstance(yl_dict, dict):
+            yl_dict[vid] = {"title": tit, "artist": art, "album": pl_name, "duration": dur}
+        if isinstance(ytm_th, dict) and turl:
+            ytm_th[vid] = turl
+        _K29_SRC_MAP[sid] = "ytm"
+        _K29_SRC_MAP[vid] = "ytm"
+        _K31_META_MAP[sid] = (tit, art, dur)
+        out.append({
+            "id": sid, "parent": "ytpl_root", "isDir": False, "title": tit,
+            "album": pl_name, "artist": art, "duration": dur, "coverArt": sid,
+            "suffix": "m4a", "contentType": "audio/mp4", "bitRate": 256, "type": "music",
+        })
+    return out
+
+def _k32_fetch_ytm_tracks(u, pl_id, force=False):
+    su = _k32_norm_u(u)
+    cp = _k32_ck_path(su)
+    if not cp or not _k32_should_use_ck(su):
+        return None
+    ck, now = f"{su}|{pl_id}", _K30T.time()
+    cached = _K32_TR_CACHE.get(ck)
+    if (not force) and cached and (now - cached[0]) < 900:
+        return cached[1]
+    try:
+        cmd = _k32_ytdlp_base(cp) + ["--flat-playlist", "--dump-single-json", "--playlist-end", "120", f"https://music.youtube.com/playlist?list={pl_id}"]
+        raw = _SP.check_output(cmd, timeout=22).decode("utf-8", "ignore")
+        jd = _J.loads(raw) if raw.strip().startswith("{") else {}
+        pl_title = str(jd.get("title") or ("Liked Music" if pl_id == "LM" else pl_id)).strip()
+        tracks = _k32_norm_entries(jd.get("entries"), su, pl_title)
+        obj = {"id": f"ytpl_{pl_id}", "name": pl_title, "owner": su, "tracks": tracks}
+        _K32_TR_CACHE[ck] = (now, obj)
+        return obj
+    except Exception:
+        return cached[1] if cached else None
+
+def _k32_fetch_ytm_playlists(u, force=False):
+    su = _k32_norm_u(u)
+    cp = _k32_ck_path(su)
+    if not cp or not _k32_should_use_ck(su):
+        return []
+    now = _K30T.time()
+    cached = _K32_PL_CACHE.get(su)
+    if (not force) and cached and (now - cached[0]) < 900:
+        return cached[1]
+    pls = [{"id": "ytpl_LM", "name": "[YTM] Liked Music", "owner": su, "public": False, "songCount": 50, "duration": 10000, "created": "2026-01-01T00:00:00Z", "changed": "2026-01-01T00:00:00Z"}]
+    seen = {"LM"}
+    try:
+        cmd = _k32_ytdlp_base(cp) + ["--flat-playlist", "--dump-single-json", "--playlist-end", "40", "https://www.youtube.com/feed/playlists"]
+        raw = _SP.check_output(cmd, timeout=18).decode("utf-8", "ignore")
+        jd = _J.loads(raw) if raw.strip().startswith("{") else {}
+        for it in (jd.get("entries") or []):
+            if not isinstance(it, dict):
+                continue
+            pid = str(it.get("id") or "").strip()
+            tit = str(it.get("title") or "").strip()
+            if not pid or pid in seen or not tit or pid in ("WL", "LL"):
+                continue
+            seen.add(pid)
+            cnt = int(it.get("playlist_count") or 20)
+            pls.append({
+                "id": f"ytpl_{pid}", "name": f"[YTM] {tit}", "owner": su,
+                "public": False, "songCount": cnt, "duration": cnt * 210,
+                "created": "2026-01-01T00:00:00Z", "changed": "2026-01-01T00:00:00Z",
+            })
+    except Exception:
+        pass
+    _K32_PL_CACHE[su] = (now, pls)
+    return pls
+
+
+async def _k32_handle_ytm_playlist(scope, receive, send):
+    qd = dict(_pq(scope.get("query_string", b"").decode("utf-8", "ignore"), keep_blank_values=True))
+    pid = str(qd.get("id") or "").strip()
+    if not pid.startswith("ytpl_"):
+        return False
+    if "_check_auth" in globals() and not _check_auth(qd):
+        return False
+    su = _k32_norm_u(qd.get("u") or _k32_cur_user())
+    raw_id = pid[5:]
+    try:
+        obj = await _A.wait_for(_A.get_running_loop().run_in_executor(_K29_ART_POOL, _k32_fetch_ytm_tracks, su, raw_id, False), timeout=24)
+    except Exception:
+        obj = None
+    tracks = obj["tracks"] if obj else []
+    pl_name = obj["name"] if obj else raw_id
+    tot_dur = sum(int(t.get("duration") or 0) for t in tracks)
+    fmt, cb = str(qd.get("f") or "xml").strip().lower(), str(qd.get("callback") or "").strip()
+    cors_h = {"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"}
+    if fmt in ("json", "jsonp"):
+        pl_obj = {
+            "id": pid, "name": f"[YTM] {pl_name}", "owner": su, "public": False,
+            "songCount": len(tracks), "duration": tot_dur,
+            "created": "2026-01-01T00:00:00Z", "changed": "2026-01-01T00:00:00Z", "entry": tracks,
+        }
+        out = _J.dumps({"subsonic-response": {"status": "ok", "version": "1.16.1", "type": "mirasonic", "openSubsonic": True, "playlist": pl_obj}}, ensure_ascii=False)
+        mt = "application/javascript; charset=utf-8" if (fmt == "jsonp" and cb) else "application/json; charset=utf-8"
+        if fmt == "jsonp" and cb:
+            out = f"{cb}({out});"
+        await _R(content=out.encode("utf-8"), status_code=200, media_type=mt, headers=cors_h)(scope, receive, send)
+        return True
+    parts = [
+        f'<?xml version="1.0" encoding="UTF-8"?><subsonic-response xmlns="http://subsonic.org/restapi" status="ok" version="1.16.1">'
+        f'<playlist id="{_K31H.escape(pid, quote=True)}" name="[YTM] {_K31H.escape(pl_name, quote=True)}" owner="{_K31H.escape(su, quote=True)}" public="false" songCount="{len(tracks)}" duration="{tot_dur}">'
+    ]
+    for t in tracks:
+        parts.append(
+            f'<entry id="{_K31H.escape(t["id"], quote=True)}" isDir="false" title="{_K31H.escape(t["title"], quote=True)}" '
+            f'album="{_K31H.escape(t["album"], quote=True)}" artist="{_K31H.escape(t["artist"], quote=True)}" '
+            f'duration="{t["duration"]}" coverArt="{_K31H.escape(t["coverArt"], quote=True)}" suffix="m4a" contentType="audio/mp4" bitRate="256" type="music"/>'
+        )
+    parts.append("</playlist></subsonic-response>")
+    await _R(content="".join(parts).encode("utf-8"), status_code=200, media_type="application/xml; charset=utf-8", headers=cors_h)(scope, receive, send)
+    return True
+
+async def _k32_merge_ytm_json(data, path_l):
+    su = _k32_cur_user()
+    if not su or not _k32_should_use_ck(su):
+        return False
+    sr = data.get("subsonic-response") if isinstance(data, dict) else None
+    if not isinstance(sr, dict):
+        return False
+    if "/getplaylists" in path_l:
+        try:
+            ypls = await _A.wait_for(_A.get_running_loop().run_in_executor(_K29_ART_POOL, _k32_fetch_ytm_playlists, su, False), timeout=12)
+        except Exception:
+            ypls = []
+        if not ypls:
+            return False
+        pls_box = sr.setdefault("playlists", {})
+        cur = pls_box.setdefault("playlist", [])
+        if isinstance(cur, list):
+            seen = {str(x.get("id") or "") for x in cur if isinstance(x, dict)}
+            added = [p for p in ypls if p["id"] not in seen]
+            if added:
+                pls_box["playlist"] = added + cur
+                return True
+    elif "/getstarred" in path_l:
+        ck = f"{su}|LM"
+        cached = _K32_TR_CACHE.get(ck)
+        if cached and cached[1] and cached[1].get("tracks"):
+            key = "starred2" if "starred2" in sr else ("starred" if "starred" in sr else None)
+            if key and isinstance(sr.get(key), dict):
+                cur = sr[key].setdefault("song", [])
+                if isinstance(cur, list):
+                    seen = {str(x.get("id") or "") for x in cur if isinstance(x, dict)}
+                    added = [t for t in cached[1]["tracks"][:50] if t["id"] not in seen]
+                    if added:
+                        sr[key]["song"] = cur + added
+                        return True
+    return False
 
 import inspect as _K28INS
 
@@ -8407,6 +8590,10 @@ class _K28ASGIMiddleware:
             return await self.app(scope, receive, send)
 
         method = (scope.get("method") or "GET").upper()
+
+        if "/getplaylist" in p and "/getplaylists" not in p:
+            if await _k32_handle_ytm_playlist(scope, receive, send):
+                return
 
         if "/getlyrics" in p:
             if await _k31_handle_lyrics(scope, receive, send, p):
@@ -8544,6 +8731,8 @@ class _K28ASGIMiddleware:
                     data = _J.loads(body.decode("utf-8", "ignore"))
                     c1 = _k28_clean_json(data, dirty_flag)
                     _k31_harvest_meta(data)
+                    if await _k32_merge_ytm_json(data, p):
+                        c1 = True
                     c2 = False
                     if "_k30_filter_json_tracks" in globals():
                         c2 = _k30_filter_json_tracks(data, p)
@@ -8605,13 +8794,13 @@ async def _k31_status_page(cleaned: str = "", msg: str = "", err: str = ""):
             f'<div class="urow"><div><b>{_K31H.escape(su)}</b> <span class="bdg {bcls}">{blbl}</span>'
             f'<div class="sm">{_K31H.escape(info.get("msg",""))} {dtxt}</div></div>'
             f'<form method="post" action="/status/cookie/test" style="margin:0"><input type="hidden" name="u" value="{_K31H.escape(su,quote=True)}">'
-            f'<button class="sbtn" type="submit">Kiem tra</button></form></div>'
+            f'<button class="sbtn" type="submit">Kiem tra</button></form><form method="post" action="/status/cookie/sync" style="margin:0"><input type="hidden" name="u" value="{_K31H.escape(su,quote=True)}"><button class="sbtn" style="background:#194d33;margin-left:4px" type="submit">Sync YTM</button></form></div>'
         )
     u_html = "".join(rows) if rows else '<div class="sm">Chua co user nao nap cookie (tat ca dang chay Anonymous).</div>'
 
-    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mirasonic v1.8.41</title>
+    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mirasonic v1.8.42</title>
 <style>body{{background:#121216;color:#f1f1f4;font-family:system-ui,sans-serif;margin:0;padding:16px}}.wrap{{max-width:540px;margin:0 auto}}h1{{font-size:20px;margin:0 0 4px;color:#ff4d6d}}h2{{font-size:15px;margin:0 0 8px;color:#fff}}.sub{{font-size:13px;color:#9a9aa6;margin-bottom:14px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}}.card{{background:#1c1c22;border:1px solid #2c2c35;border-radius:12px;padding:12px;margin-bottom:12px}}.lbl{{font-size:12px;color:#9a9aa6}}.val{{font-size:19px;font-weight:700;margin-top:4px}}.sm{{font-size:12px;color:#b8b8c4;margin-top:2px}}.ok{{background:#163826;border:1px solid #28a745;color:#9ef0b8;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.err{{background:#3b181e;border:1px solid #dc3545;color:#ffadb5;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.btn{{width:100%;padding:12px;border:none;border-radius:10px;background:#ff4d6d;color:#fff;font-size:14px;font-weight:600;cursor:pointer}}.btn2{{background:#32323d;margin-top:8px}}.sbtn{{padding:6px 10px;border:none;border-radius:8px;background:#2f2f3b;color:#fff;font-size:12px;cursor:pointer}}.urow{{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #2a2a33}}.bdg{{font-size:11px;padding:2px 6px;border-radius:6px;margin-left:4px}}.bg-g{{background:#194d33;color:#8ef5be}}.bg-b{{background:#183a5c;color:#93c5fd}}.bg-r{{background:#5c1922;color:#fca5a5}}.bg-y{{background:#4a3c12;color:#fde68a}}input,textarea{{width:100%;box-sizing:border-box;background:#121216;color:#fff;border:1px solid #353542;border-radius:8px;padding:9px;margin-bottom:8px;font-size:13px}}</style></head>
-<body><div class="wrap"><h1>Mirasonic Ultimate</h1><div class="sub">v1.8.41 | Uptime: {up_str}</div>{banner}
+<body><div class="wrap"><h1>Mirasonic Ultimate</h1><div class="sub">v1.8.42 | Uptime: {up_str}</div>{banner}
 <div class="grid">
 <div class="card" style="margin:0"><div class="lbl">RAM dang dung</div><div class="val">{ram_mb} MB</div><div class="sm">Dem anh RAM: {len(_K29_FAST_RAM)}</div></div>
 <div class="card" style="margin:0"><div class="lbl">Nhac tam (HDD)</div><div class="val">{aud_b/1048576:.1f} MB</div><div class="sm">{aud_cnt} file (tran 2GB)</div></div>
@@ -8667,5 +8856,15 @@ async def _k32_cookie_test_ep(req: _K32RQ):
     st, smsg = await _A.get_running_loop().run_in_executor(_K29_ART_POOL, _k32_test_cookie, su)
     ef = "&err=1" if st == "expired" else ""
     return _R(status_code=303, headers={"Location": f"/status?msg={_K31UP.quote(f'[{su}] {smsg}')}{ef}"})
+
+@app.post("/status/cookie/sync")
+async def _k32_cookie_sync_ep(req: _K32RQ):
+    raw = (await req.body()).decode("utf-8", "ignore")
+    su = _k32_norm_u((_K31UP.parse_qs(raw).get("u") or [""])[0])
+    lp = _A.get_running_loop()
+    pls = await lp.run_in_executor(_K29_ART_POOL, _k32_fetch_ytm_playlists, su, True)
+    lm = await lp.run_in_executor(_K29_ART_POOL, _k32_fetch_ytm_tracks, su, "LM", True)
+    lcnt = len(lm["tracks"]) if lm else 0
+    return _R(status_code=303, headers={"Location": f"/status?msg={_K31UP.quote(f'[{su}] Da dong bo {len(pls)} playlist YTM & {lcnt} bai Liked Music!')}"})
 
 _TH.Thread(target=_k31_gc_loop, daemon=True).start()
