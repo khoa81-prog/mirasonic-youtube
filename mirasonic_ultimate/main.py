@@ -3471,9 +3471,9 @@ def _get_direct_yt_url(vid, uname=""):
     attempts = [ck_p, ""] if ck_p else [""]
     for cp in attempts:
         try:
-            c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "--force-ipv4", "--js-runtimes", "node"]
+            c = ["yt-dlp", "--no-playlist", "--no-warnings", "-q", "--no-check-certificate", "--force-ipv4", "--js-runtimes", "deno"]
             if cp:
-                c.extend(["--cookies", cp])
+                c.extend(["--cookies", cp, "--extractor-args", "youtube:player_client=web_music"])
             c.extend(["-f", "141/774/251/140/bestaudio/best", "-g", f"https://{'music' if cp else 'www'}.youtube.com/watch?v={vid}"])
             u = _SP.check_output(c, timeout=15).decode("utf-8", "ignore").strip().splitlines()[0]
             if u.startswith("http"):
@@ -3519,7 +3519,7 @@ def _ens_m4a_256(vid):
                     "yt-dlp", "--no-playlist", "--no-warnings", "-q",
                     "--no-check-certificate", "--force-ipv4",
                     "--socket-timeout", "15", "--retries", "3", "--fragment-retries", "3",
-                    "--js-runtimes", "node", *(["--cookies", _ck_p] if _ck_p else []),
+                    "--js-runtimes", "deno", *(["--cookies", _ck_p, "--extractor-args", "youtube:player_client=web_music"] if _ck_p else []),
                     "-f", "141/774/251/140/bestaudio/best",
                     "-o", "-", f"https://{'music' if _ck_p else 'www'}.youtube.com/watch?v={vid}",
                 ]
@@ -7561,7 +7561,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.42 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
+# --- K28: V1.8.43 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
@@ -8361,7 +8361,7 @@ def _k32_test_cookie(u):
     try:
         cmd = [
             "yt-dlp", "--cookies", p, "--no-playlist", "--no-warnings",
-            "--no-check-certificate", "--force-ipv4", "--js-runtimes", "node", "-F",
+            "--no-check-certificate", "--force-ipv4", "--js-runtimes", "deno", "--extractor-args", "youtube:player_client=web_music", "-F",
             "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
         ]
         pr = _SP.run(cmd, capture_output=True, text=True, timeout=18)
@@ -8393,7 +8393,7 @@ _K32_PL_CACHE = {}
 _K32_TR_CACHE = {}
 
 def _k32_ytdlp_base(cp=""):
-    cmd = ["yt-dlp", "--no-warnings", "--no-check-certificate", "--force-ipv4", "--js-runtimes", "node"]
+    cmd = ["yt-dlp", "--no-warnings", "--no-check-certificate", "--force-ipv4", "--js-runtimes", "deno"]
     if cp:
         cmd.extend(["--cookies", cp])
     return cmd
@@ -8798,9 +8798,9 @@ async def _k31_status_page(cleaned: str = "", msg: str = "", err: str = ""):
         )
     u_html = "".join(rows) if rows else '<div class="sm">Chua co user nao nap cookie (tat ca dang chay Anonymous).</div>'
 
-    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mirasonic v1.8.42</title>
+    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mirasonic v1.8.43</title>
 <style>body{{background:#121216;color:#f1f1f4;font-family:system-ui,sans-serif;margin:0;padding:16px}}.wrap{{max-width:540px;margin:0 auto}}h1{{font-size:20px;margin:0 0 4px;color:#ff4d6d}}h2{{font-size:15px;margin:0 0 8px;color:#fff}}.sub{{font-size:13px;color:#9a9aa6;margin-bottom:14px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}}.card{{background:#1c1c22;border:1px solid #2c2c35;border-radius:12px;padding:12px;margin-bottom:12px}}.lbl{{font-size:12px;color:#9a9aa6}}.val{{font-size:19px;font-weight:700;margin-top:4px}}.sm{{font-size:12px;color:#b8b8c4;margin-top:2px}}.ok{{background:#163826;border:1px solid #28a745;color:#9ef0b8;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.err{{background:#3b181e;border:1px solid #dc3545;color:#ffadb5;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.btn{{width:100%;padding:12px;border:none;border-radius:10px;background:#ff4d6d;color:#fff;font-size:14px;font-weight:600;cursor:pointer}}.btn2{{background:#32323d;margin-top:8px}}.sbtn{{padding:6px 10px;border:none;border-radius:8px;background:#2f2f3b;color:#fff;font-size:12px;cursor:pointer}}.urow{{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #2a2a33}}.bdg{{font-size:11px;padding:2px 6px;border-radius:6px;margin-left:4px}}.bg-g{{background:#194d33;color:#8ef5be}}.bg-b{{background:#183a5c;color:#93c5fd}}.bg-r{{background:#5c1922;color:#fca5a5}}.bg-y{{background:#4a3c12;color:#fde68a}}input,textarea{{width:100%;box-sizing:border-box;background:#121216;color:#fff;border:1px solid #353542;border-radius:8px;padding:9px;margin-bottom:8px;font-size:13px}}</style></head>
-<body><div class="wrap"><h1>Mirasonic Ultimate</h1><div class="sub">v1.8.42 | Uptime: {up_str}</div>{banner}
+<body><div class="wrap"><h1>Mirasonic Ultimate</h1><div class="sub">v1.8.43 | Uptime: {up_str}</div>{banner}
 <div class="grid">
 <div class="card" style="margin:0"><div class="lbl">RAM dang dung</div><div class="val">{ram_mb} MB</div><div class="sm">Dem anh RAM: {len(_K29_FAST_RAM)}</div></div>
 <div class="card" style="margin:0"><div class="lbl">Nhac tam (HDD)</div><div class="val">{aud_b/1048576:.1f} MB</div><div class="sm">{aud_cnt} file (tran 2GB)</div></div>

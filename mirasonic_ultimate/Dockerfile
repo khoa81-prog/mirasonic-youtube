@@ -1,6 +1,7 @@
 FROM python:3.12-slim AS app
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
 
-# ffmpeg nodejs repackages googlevideo's fragmented mp4 into ADTS — without it
+# ffmpeg repackages googlevideo's fragmented mp4 into ADTS — without it
 # clients crash on seek (see the long comment in main.py).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg \
