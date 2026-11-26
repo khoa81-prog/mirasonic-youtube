@@ -7591,7 +7591,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.55 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
+# --- K28: V1.8.56 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
@@ -7612,7 +7612,7 @@ _K28_XML_STRIP_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[(?:HDD|YTM|YT)\]
 _K28_JSONP_STRIP_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[(?:HDD|YTM|YT)\]\s*', _RE.I)
 
 _K29_MAP_FILE = "/data/k29_src_map.json" if _OS.path.isdir("/data") else "/tmp/k29_src_map.json"
-_K29_DISK_DIR = "/data/k29_art_v33" if _OS.path.isdir("/data") else "/tmp/k29_art_v33"
+_K29_DISK_DIR = "/data/k29_art_v34" if _OS.path.isdir("/data") else "/tmp/k29_art_v34"
 try:
     _OS.makedirs(_K29_DISK_DIR, exist_ok=True)
 except Exception:
@@ -7811,7 +7811,9 @@ def _k29_make_badge(kind, sz):
         )
         cmask = Image.new("L", (W, H), 0)
         ImageDraw.Draw(cmask).ellipse((0, 0, W - 1, H - 1), fill=255)
-        im.paste(sh, (0, 0), cmask)
+        from PIL import ImageChops
+        sh.putalpha(ImageChops.multiply(sh.getchannel("A"), cmask))
+        im.alpha_composite(sh)
         dr = ImageDraw.Draw(im)
 
         # Than o cung trang
@@ -8890,7 +8892,7 @@ app.add_middleware(_K28ASGIMiddleware)
 async def _k31_status_page(cleaned: str = "", msg: str = "", err: str = ""):
     ram_mb = _k31_ram_mb()
     aud_cnt, aud_b = _k31_dir_stats(globals().get("_AUD_DIR"))
-    art_cnt, art_b = _k31_dir_stats(globals().get("_K29_ART_DIR") or "/data/k29_art_v33")
+    art_cnt, art_b = _k31_dir_stats(globals().get("_K29_ART_DIR") or "/data/k29_art_v34")
     up_s = int(_K30T.time() - _K31_START_TS)
     up_str = f"{up_s // 86400}d {(up_s % 86400) // 3600}h {(up_s % 3600) // 60}m"
     act_jobs = sum(1 for jn in ("_M4A_256_JOBS", "_MP3_JOBS") for v in (globals().get(jn) or {}).values() if isinstance(v, dict) and not v.get("d"))
@@ -8917,9 +8919,9 @@ async def _k31_status_page(cleaned: str = "", msg: str = "", err: str = ""):
         )
     u_html = "".join(rows) if rows else '<div class="sm">Chua co user nao nap cookie (tat ca dang chay Anonymous).</div>'
 
-    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mirasonic v1.8.55</title>
+    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mirasonic v1.8.56</title>
 <style>body{{background:#121216;color:#f1f1f4;font-family:system-ui,sans-serif;margin:0;padding:16px}}.wrap{{max-width:540px;margin:0 auto}}h1{{font-size:20px;margin:0 0 4px;color:#ff4d6d}}h2{{font-size:15px;margin:0 0 8px;color:#fff}}.sub{{font-size:13px;color:#9a9aa6;margin-bottom:14px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}}.card{{background:#1c1c22;border:1px solid #2c2c35;border-radius:12px;padding:12px;margin-bottom:12px}}.lbl{{font-size:12px;color:#9a9aa6}}.val{{font-size:19px;font-weight:700;margin-top:4px}}.sm{{font-size:12px;color:#b8b8c4;margin-top:2px}}.ok{{background:#163826;border:1px solid #28a745;color:#9ef0b8;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.err{{background:#3b181e;border:1px solid #dc3545;color:#ffadb5;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.btn{{width:100%;padding:12px;border:none;border-radius:10px;background:#ff4d6d;color:#fff;font-size:14px;font-weight:600;cursor:pointer}}.btn2{{background:#32323d;margin-top:8px}}.sbtn{{padding:6px 10px;border:none;border-radius:8px;background:#2f2f3b;color:#fff;font-size:12px;cursor:pointer}}.urow{{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #2a2a33}}.bdg{{font-size:11px;padding:2px 6px;border-radius:6px;margin-left:4px}}.bg-g{{background:#194d33;color:#8ef5be}}.bg-b{{background:#183a5c;color:#93c5fd}}.bg-r{{background:#5c1922;color:#fca5a5}}.bg-y{{background:#4a3c12;color:#fde68a}}input,textarea{{width:100%;box-sizing:border-box;background:#121216;color:#fff;border:1px solid #353542;border-radius:8px;padding:9px;margin-bottom:8px;font-size:13px}}</style></head>
-<body><div class="wrap"><h1>Mirasonic Ultimate</h1><div class="sub">v1.8.55 | Uptime: {up_str}</div>{banner}
+<body><div class="wrap"><h1>Mirasonic Ultimate</h1><div class="sub">v1.8.56 | Uptime: {up_str}</div>{banner}
 <div class="grid">
 <div class="card" style="margin:0"><div class="lbl">RAM dang dung</div><div class="val">{ram_mb} MB</div><div class="sm">Dem anh RAM: {len(_K29_FAST_RAM)}</div></div>
 <div class="card" style="margin:0"><div class="lbl">Nhac tam (HDD)</div><div class="val">{aud_b/1048576:.1f} MB</div><div class="sm">{aud_cnt} file (tran 2GB)</div></div>
@@ -8989,7 +8991,7 @@ async def _k32_cookie_sync_ep(req: _K32RQ):
 try:
     _k32_rst = "/data/.k32_art_reset_1845"
     if not _OS.path.exists(_k32_rst):
-        _k32_ad = globals().get("_K29_ART_DIR") or "/data/k29_art_v33"
+        _k32_ad = globals().get("_K29_ART_DIR") or "/data/k29_art_v34"
         if _OS.path.isdir(_k32_ad):
             for _fn in _OS.listdir(_k32_ad):
                 try: _OS.remove(_OS.path.join(_k32_ad, _fn))
