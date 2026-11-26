@@ -7591,7 +7591,7 @@ try:
 except Exception as _pe:
     print(f"[K27_ERR] {_pe}", flush=True)
 
-# --- K28: V1.8.54 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
+# --- K28: V1.8.55 FIX CONTENT-LENGTH DROP + SEARCH PRIORITY + TURBO COVER ART ---
 import io as _K29IO, hashlib as _K29HL
 from collections import OrderedDict as _K29OD
 from concurrent.futures import ThreadPoolExecutor as _K29TPE
@@ -7612,7 +7612,7 @@ _K28_XML_STRIP_RE = _RE.compile(rb'((?:title|name|album)=")\s*\[(?:HDD|YTM|YT)\]
 _K28_JSONP_STRIP_RE = _RE.compile(rb'("(?:title|name|album)"\s*:\s*")\s*\[(?:HDD|YTM|YT)\]\s*', _RE.I)
 
 _K29_MAP_FILE = "/data/k29_src_map.json" if _OS.path.isdir("/data") else "/tmp/k29_src_map.json"
-_K29_DISK_DIR = "/data/k29_art_v32" if _OS.path.isdir("/data") else "/tmp/k29_art_v32"
+_K29_DISK_DIR = "/data/k29_art_v33" if _OS.path.isdir("/data") else "/tmp/k29_art_v33"
 try:
     _OS.makedirs(_K29_DISK_DIR, exist_ok=True)
 except Exception:
@@ -7745,43 +7745,122 @@ def _k29_make_badge(kind, sz):
     ck = (kind, sz)
     if ck in _K29_ICON_CACHE:
         return _K29_ICON_CACHE[ck]
+    from PIL import Image, ImageDraw
     S = 4
-    if kind == "yt":
-        W, H = int(sz * 1.44 * S), int(sz * 0.94 * S)
-        im = _K29Img.new("RGBA", (W, H), (0, 0, 0, 0))
-        d = _K29Draw.Draw(im)
-        d.rounded_rectangle((2, 2, W - 2, H - 2), radius=int(H * 0.28), fill=(0, 0, 0, 155))
-        d.rounded_rectangle((6, 6, W - 6, H - 6), radius=int(H * 0.25), fill=(255, 0, 0, 255), outline=(255, 255, 255, 235), width=max(2, S))
-        cx, cy, r = W * 0.52, H * 0.50, H * 0.26
-        d.polygon([(cx - r * 0.72, cy - r * 0.90), (cx - r * 0.72, cy + r * 0.90), (cx + r * 1.02, cy)], fill=(255, 255, 255, 255))
-        out = im.resize((max(1, W // S), max(1, H // S)), _K29_LANCZOS)
-    elif kind == "ytm":
-        W = H = sz * S
-        im = _K29Img.new("RGBA", (W, H), (0, 0, 0, 0))
-        d = _K29Draw.Draw(im)
-        d.ellipse((2, 2, W - 2, H - 2), fill=(0, 0, 0, 155))
-        d.ellipse((6, 6, W - 6, H - 6), fill=(240, 0, 0, 255), outline=(255, 255, 255, 235), width=max(2, S))
-        m = int(W * 0.20)
-        d.ellipse((m, m, W - m, H - m), outline=(255, 255, 255, 255), width=max(3, int(W * 0.052)))
-        cx, cy, r = W * 0.52, H * 0.50, W * 0.165
-        d.polygon([(cx - r * 0.72, cy - r * 0.90), (cx - r * 0.72, cy + r * 0.90), (cx + r * 0.98, cy)], fill=(255, 255, 255, 255))
-        out = im.resize((sz, sz), _K29_LANCZOS)
+    W = H = max(16, int(sz)) * S
+    k = str(kind or "").strip().lower()
+    im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    dr = ImageDraw.Draw(im)
+
+    if k == "yt":
+        # Hinh tron do + nut Play chu nhat bo goc trang + tam giac do
+        dr.ellipse((0, 0, W - 1, H - 1), fill=(255, 0, 0, 255))
+        rw, rh = int(W * 0.62), int(H * 0.44)
+        rx0, ry0 = (W - rw) // 2, (H - rh) // 2
+        dr.rounded_rectangle(
+            (rx0, ry0, rx0 + rw, ry0 + rh),
+            radius=max(2, int(rh * 0.28)),
+            fill=(255, 255, 255, 255),
+        )
+        cx, cy = W // 2, H // 2
+        tw, th = int(W * 0.16), int(H * 0.18)
+        dr.polygon(
+            [(cx - int(tw * 0.35), cy - th // 2),
+             (cx - int(tw * 0.35), cy + th // 2),
+             (cx + int(tw * 0.72), cy)],
+            fill=(255, 0, 0, 255),
+        )
+    elif k == "ytm":
+        # Hinh tron do + vong tron trang + tam giac Play trang
+        dr.ellipse((0, 0, W - 1, H - 1), fill=(255, 0, 0, 255))
+        r_out = int(W * 0.31)
+        sw = max(2, int(W * 0.062))
+        cx, cy = W // 2, H // 2
+        dr.ellipse(
+            (cx - r_out, cy - r_out, cx + r_out, cy + r_out),
+            outline=(255, 255, 255, 255),
+            width=sw,
+        )
+        tw, th = int(W * 0.21), int(H * 0.24)
+        dr.polygon(
+            [(cx - int(tw * 0.34), cy - th // 2),
+             (cx - int(tw * 0.34), cy + th // 2),
+             (cx + int(tw * 0.72), cy)],
+            fill=(255, 255, 255, 255),
+        )
     else:
-        W = H = sz * S
-        im = _K29Img.new("RGBA", (W, H), (0, 0, 0, 0))
-        d = _K29Draw.Draw(im)
-        d.rounded_rectangle((2, 2, W - 2, H - 2), radius=int(W * 0.25), fill=(0, 0, 0, 155))
-        d.rounded_rectangle((6, 6, W - 6, H - 6), radius=int(W * 0.22), fill=(0, 176, 107, 255), outline=(255, 255, 255, 235), width=max(2, S))
-        sw = max(3, int(W * 0.052))
-        d.rounded_rectangle((int(W * 0.23), int(H * 0.17), int(W * 0.77), int(H * 0.83)), radius=int(W * 0.08), outline=(255, 255, 255, 255), width=sw)
-        cx, cy, pr = W * 0.50, H * 0.42, W * 0.145
-        d.ellipse((cx - pr, cy - pr, cx + pr, cy + pr), outline=(255, 255, 255, 255), width=max(2, int(W * 0.042)))
-        sr = W * 0.048
-        d.ellipse((cx - sr, cy - sr, cx + sr, cy + sr), fill=(255, 255, 255, 255))
-        ly = int(H * 0.65)
-        d.line((int(W * 0.25), ly, int(W * 0.75), ly), fill=(255, 255, 255, 255), width=max(2, int(W * 0.042)))
-        d.ellipse((int(W * 0.60), int(H * 0.71), int(W * 0.68), int(H * 0.79)), fill=(255, 255, 255, 255))
-        out = im.resize((sz, sz), _K29_LANCZOS)
+        # Hinh tron xanh ngoc + do bong cheo + than o cung trang + chu HDD
+        teal = (26, 188, 156, 255)
+        sh_col = (16, 148, 122, 255)
+        white = (255, 255, 255, 255)
+        dr.ellipse((0, 0, W - 1, H - 1), fill=teal)
+
+        bx0, by0 = int(W * 0.27), int(H * 0.17)
+        bx1, by1 = int(W * 0.73), int(H * 0.83)
+        br = max(2, int(W * 0.045))
+
+        # Do bong cheo 45 do cat gon trong vong tron
+        sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(sh)
+        sd.polygon(
+            [(bx1 - br // 2, by0 + br // 2),
+             (bx1 + W, by0 + W),
+             (bx0 + W, by1 + W),
+             (bx0 + br // 2, by1 - br // 2)],
+            fill=sh_col,
+        )
+        cmask = Image.new("L", (W, H), 0)
+        ImageDraw.Draw(cmask).ellipse((0, 0, W - 1, H - 1), fill=255)
+        im.paste(sh, (0, 0), cmask)
+        dr = ImageDraw.Draw(im)
+
+        # Than o cung trang
+        dr.rounded_rectangle((bx0, by0, bx1, by1), radius=br, fill=white)
+
+        # Dia tron xanh + bong nhe + truc trang o giua
+        cx, cy = W // 2, int(H * 0.39)
+        pr = int(W * 0.182)
+        dr.ellipse((cx - pr, cy - pr, cx + pr, cy + pr), fill=teal)
+        sr = max(2, int(W * 0.048))
+        dr.ellipse((cx - sr, cy - sr, cx + sr, cy + sr), fill=white)
+
+        # 6 cham oc vit nho
+        orad = max(1, int(W * 0.015))
+        for ox in (bx0 + int(W * 0.032), bx1 - int(W * 0.032)):
+            for oy in (by0 + int(H * 0.035), int(H * 0.50), by1 - int(H * 0.035)):
+                dr.ellipse((ox - orad, oy - orad, ox + orad, oy + orad), fill=teal)
+
+        # Khung nhan xanh duoi + chu HDD ve bang hinh hoc (khong phu thuoc font)
+        lx0, ly0 = int(W * 0.315), int(H * 0.615)
+        lx1, ly1 = int(W * 0.685), int(H * 0.775)
+        dr.rounded_rectangle((lx0, ly0, lx1, ly1), radius=max(2, int(W * 0.028)), fill=teal)
+
+        ty0, ty1 = int(H * 0.646), int(H * 0.744)
+        th = ty1 - ty0
+        st = max(2, int(W * 0.023))
+        lw = int(W * 0.088)
+        lg = int(W * 0.024)
+        tx = (W - (3 * lw + 2 * lg)) // 2
+
+        # Chu H
+        dr.rectangle((tx, ty0, tx + st, ty1), fill=white)
+        dr.rectangle((tx + lw - st, ty0, tx + lw, ty1), fill=white)
+        my = (ty0 + ty1) // 2
+        dr.rectangle((tx, my - st // 2, tx + lw, my + st - st // 2), fill=white)
+
+        # Hai chu D
+        for idx_d in (1, 2):
+            dx = tx + idx_d * (lw + lg)
+            dr.rounded_rectangle((dx, ty0, dx + lw, ty1), radius=max(2, th // 2), fill=white)
+            dr.rectangle((dx, ty0, dx + lw // 2, ty1), fill=white)
+            ix0, iy0, ix1, iy1 = dx + st, ty0 + st, dx + lw - st, ty1 - st
+            if ix1 > ix0 + 1 and iy1 > iy0 + 1:
+                dr.rounded_rectangle((ix0, iy0, ix1, iy1), radius=max(1, (iy1 - iy0) // 2), fill=teal)
+                dr.rectangle((ix0, iy0, ix0 + (ix1 - ix0) // 2, iy1), fill=teal)
+
+    out = im.resize((int(sz), int(sz)), _K29_LANCZOS)
+    if len(_K29_ICON_CACHE) > 96:
+        _K29_ICON_CACHE.clear()
     _K29_ICON_CACHE[ck] = out
     return out
 
@@ -8811,7 +8890,7 @@ app.add_middleware(_K28ASGIMiddleware)
 async def _k31_status_page(cleaned: str = "", msg: str = "", err: str = ""):
     ram_mb = _k31_ram_mb()
     aud_cnt, aud_b = _k31_dir_stats(globals().get("_AUD_DIR"))
-    art_cnt, art_b = _k31_dir_stats(globals().get("_K29_ART_DIR") or "/data/k29_art_v32")
+    art_cnt, art_b = _k31_dir_stats(globals().get("_K29_ART_DIR") or "/data/k29_art_v33")
     up_s = int(_K30T.time() - _K31_START_TS)
     up_str = f"{up_s // 86400}d {(up_s % 86400) // 3600}h {(up_s % 3600) // 60}m"
     act_jobs = sum(1 for jn in ("_M4A_256_JOBS", "_MP3_JOBS") for v in (globals().get(jn) or {}).values() if isinstance(v, dict) and not v.get("d"))
@@ -8838,9 +8917,9 @@ async def _k31_status_page(cleaned: str = "", msg: str = "", err: str = ""):
         )
     u_html = "".join(rows) if rows else '<div class="sm">Chua co user nao nap cookie (tat ca dang chay Anonymous).</div>'
 
-    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mirasonic v1.8.54</title>
+    page = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mirasonic v1.8.55</title>
 <style>body{{background:#121216;color:#f1f1f4;font-family:system-ui,sans-serif;margin:0;padding:16px}}.wrap{{max-width:540px;margin:0 auto}}h1{{font-size:20px;margin:0 0 4px;color:#ff4d6d}}h2{{font-size:15px;margin:0 0 8px;color:#fff}}.sub{{font-size:13px;color:#9a9aa6;margin-bottom:14px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}}.card{{background:#1c1c22;border:1px solid #2c2c35;border-radius:12px;padding:12px;margin-bottom:12px}}.lbl{{font-size:12px;color:#9a9aa6}}.val{{font-size:19px;font-weight:700;margin-top:4px}}.sm{{font-size:12px;color:#b8b8c4;margin-top:2px}}.ok{{background:#163826;border:1px solid #28a745;color:#9ef0b8;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.err{{background:#3b181e;border:1px solid #dc3545;color:#ffadb5;padding:10px;border-radius:10px;margin-bottom:12px;font-size:13px}}.btn{{width:100%;padding:12px;border:none;border-radius:10px;background:#ff4d6d;color:#fff;font-size:14px;font-weight:600;cursor:pointer}}.btn2{{background:#32323d;margin-top:8px}}.sbtn{{padding:6px 10px;border:none;border-radius:8px;background:#2f2f3b;color:#fff;font-size:12px;cursor:pointer}}.urow{{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #2a2a33}}.bdg{{font-size:11px;padding:2px 6px;border-radius:6px;margin-left:4px}}.bg-g{{background:#194d33;color:#8ef5be}}.bg-b{{background:#183a5c;color:#93c5fd}}.bg-r{{background:#5c1922;color:#fca5a5}}.bg-y{{background:#4a3c12;color:#fde68a}}input,textarea{{width:100%;box-sizing:border-box;background:#121216;color:#fff;border:1px solid #353542;border-radius:8px;padding:9px;margin-bottom:8px;font-size:13px}}</style></head>
-<body><div class="wrap"><h1>Mirasonic Ultimate</h1><div class="sub">v1.8.54 | Uptime: {up_str}</div>{banner}
+<body><div class="wrap"><h1>Mirasonic Ultimate</h1><div class="sub">v1.8.55 | Uptime: {up_str}</div>{banner}
 <div class="grid">
 <div class="card" style="margin:0"><div class="lbl">RAM dang dung</div><div class="val">{ram_mb} MB</div><div class="sm">Dem anh RAM: {len(_K29_FAST_RAM)}</div></div>
 <div class="card" style="margin:0"><div class="lbl">Nhac tam (HDD)</div><div class="val">{aud_b/1048576:.1f} MB</div><div class="sm">{aud_cnt} file (tran 2GB)</div></div>
@@ -8910,7 +8989,7 @@ async def _k32_cookie_sync_ep(req: _K32RQ):
 try:
     _k32_rst = "/data/.k32_art_reset_1845"
     if not _OS.path.exists(_k32_rst):
-        _k32_ad = globals().get("_K29_ART_DIR") or "/data/k29_art_v32"
+        _k32_ad = globals().get("_K29_ART_DIR") or "/data/k29_art_v33"
         if _OS.path.isdir(_k32_ad):
             for _fn in _OS.listdir(_k32_ad):
                 try: _OS.remove(_OS.path.join(_k32_ad, _fn))
